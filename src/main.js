@@ -570,7 +570,12 @@ function recordShortcut(e) {
     // Format key name for Tauri global shortcut parsing
     let keyName = e.key;
     if (keyName === " ") keyName = "Space";
-    if (keyName.length === 1) keyName = keyName.toUpperCase();
+    else if (keyName === "ArrowUp") keyName = "Up";
+    else if (keyName === "ArrowDown") keyName = "Down";
+    else if (keyName === "ArrowLeft") keyName = "Left";
+    else if (keyName === "ArrowRight") keyName = "Right";
+    else if (keyName === "Escape") keyName = "Esc";
+    else if (keyName.length === 1) keyName = keyName.toUpperCase();
     
     parts.push(keyName);
   }
