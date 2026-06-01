@@ -163,8 +163,9 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
             }
 
             let target_path = &app.target;
-            if !Path::new(target_path).exists() {
-                continue;
+            let path = Path::new(target_path);
+            if !path.is_file() {
+                continue; // Only extract icons from files (skip folders to avoid PowerShell exceptions)
             }
 
             // Execute completely hidden in the background without console flashing
