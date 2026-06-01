@@ -256,7 +256,6 @@ function createIconElement(iconPath, cssClass) {
   const img = document.createElement("img");
   img.className = cssClass || "";
   img.loading = "lazy";
-  let loadedSuccessfully = false;
   const replaceWithFallbackEmoji = (element, className) => {
     const fallback = document.createElement("span");
     fallback.className = (className || "") + " emoji";
@@ -268,17 +267,14 @@ function createIconElement(iconPath, cssClass) {
     if (element.parentElement) element.parentElement.replaceChild(fallback, element);
   };
   img.onerror = () => {
-    if (loadedSuccessfully) return;
     replaceWithFallbackEmoji(img, cssClass);
   };
   try {
     ensureTauri();
     if (window.__TAURI__?.core?.convertFileSrc) {
       img.src = window.__TAURI__.core.convertFileSrc(iconPath);
-      loadedSuccessfully = true;
     } else {
       img.src = `https://asset.localhost/${encodeURIComponent(iconPath)}`;
-      loadedSuccessfully = true;
     }
   } catch (e) {
     console.warn("[FromZero] Icon URL error:", e);
