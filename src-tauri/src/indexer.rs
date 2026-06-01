@@ -223,6 +223,8 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
                             let _ = app_handle.emit("icon-ready", trimmed.to_string());
+                            // Pacing: Sleep 15ms between events to prevent choking the frontend JS thread with a massive sudden flood
+                            std::thread::sleep(std::time::Duration::from_millis(15));
                         }
                     }
                 }

@@ -183,7 +183,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (window.__TAURI__.event?.listen) {
         window.__TAURI__.event.listen("icon-ready", (event) => {
           const appPath = event.payload;
-          const recentCard = document.querySelector(`.recent-card[data-app-path="${CSS.escape(appPath)}"]`);
+          const recentCard = Array.from(document.querySelectorAll(".recent-card"))
+            .find(card => card.getAttribute("data-app-path") === appPath);
           const app = appItems.find(a => a.path === appPath);
           if (recentCard && app) {
             const existingIcon = recentCard.querySelector(".recent-icon");
