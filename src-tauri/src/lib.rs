@@ -5,7 +5,7 @@ mod settings;
 use crate::commands::AppState;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewWindow};
 
 fn apply_window_vibrancy(window: &WebviewWindow) {
@@ -48,6 +48,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("FromZero Launcher — 右键菜单")
         .menu(&menu)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => {
                 app.exit(0);
@@ -61,16 +62,28 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    if let Ok(visible) = window.is_visible() {
-                        if visible {
-                            let _ = window.hide();
-                        } else {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+            let should_toggle = match event {
+                TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => true,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => !cfg!(target_os = "windows"),
+                _ => false,
+            };
+
+            if !should_toggle {
+                return;
+            }
+
+            let app = tray.app_handle();
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(visible) = window.is_visible() {
+                    if visible {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                        let _ = window.set_focus();
                     }
                 }
             }
