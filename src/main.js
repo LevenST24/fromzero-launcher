@@ -426,6 +426,21 @@ function renderResults() {
   if (selectedEl) selectedEl.scrollIntoView({ block: "nearest" });
 }
 
+function updateSelectionVisual() {
+  if (!resultsList) return;
+  const items = resultsList.children;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].classList && items[i].classList.contains("result-item")) {
+      if (i === selectedIndex) {
+        items[i].classList.add("selected");
+        items[i].scrollIntoView({ block: "nearest" });
+      } else {
+        items[i].classList.remove("selected");
+      }
+    }
+  }
+}
+
 async function executeItemAction(item) {
   try {
     ensureTauri();
@@ -472,14 +487,18 @@ async function handleGlobalKeys(e) {
   if (e.key === "ArrowDown") {
     e.preventDefault();
     if (filteredItems.length > 0) {
-      selectedIndex = (selectedIndex + 1) % filteredItems.length;
-      renderResults();
+      if (selectedIndex < filteredItems.length - 1) {
+        selectedIndex++;
+        updateSelectionVisual();
+      }
     }
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
     if (filteredItems.length > 0) {
-      selectedIndex = (selectedIndex - 1 + filteredItems.length) % filteredItems.length;
-      renderResults();
+      if (selectedIndex > 0) {
+        selectedIndex--;
+        updateSelectionVisual();
+      }
     }
   } else if (e.key === "Enter") {
     e.preventDefault();
