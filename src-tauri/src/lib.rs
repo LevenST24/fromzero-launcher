@@ -38,6 +38,22 @@ fn apply_window_vibrancy(window: &WebviewWindow) {
     }
 }
 
+fn should_toggle_from_tray_event(event: &TrayIconEvent) -> bool {
+    match event {
+        // DoubleClick is Windows-only; prefer it to avoid duplicate Click events on that platform.
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => true,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } => !cfg!(target_os = "windows"),
+        _ => false,
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
     let quit_i = MenuItem::with_id(handle, "quit", "退出 FromZero Launcher", true, None::<&str>)?;
@@ -62,17 +78,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            let should_toggle = match event {
-                TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => true,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } => !cfg!(target_os = "windows"),
-                _ => false,
-            };
-
-            if !should_toggle {
+            if !should_toggle_from_tray_event(&event) {
                 return;
             }
 
