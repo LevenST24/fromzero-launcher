@@ -10,6 +10,10 @@ let filteredItems = [];
 let selectedIndex = 0;
 let settings = { shortcut: "Alt+Space", theme: "dark", web_engines: {}, recent_apps: [] };
 
+// Search debounce and query race condition tracking
+let lastSearchId = 0;
+let searchDebounceTimeout = null;
+
 // Focus management: timestamp of last show (for debounce)
 let lastShowTime = 0;
 
@@ -115,8 +119,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     // 4. Initialize search focus
     searchInput.focus();
 
-    // 5. Setup search input listener
-    searchInput.addEventListener("input", handleSearch);
+    // 5. Setup search input listener with 100ms debounce
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchDebounceTimeout);
+      searchDebounceTimeout = setTimeout(handleSearch, 100);
+    });
 
     // 6. Setup keyboard event listener
     window.addEventListener("keydown", handleGlobalKeys);
@@ -143,12 +150,12 @@ window.addEventListener("DOMContentLoaded", async () => {
         // without doing a full fuzzy search, to preserve selection index and focus!
         const query = searchInput.value.trim();
         if (query !== "") {
-          const imgElements = document.querySelectorAll(".result-item img.result-icon");
-          imgElements.forEach((img, idx) => {
-            const item = filteredItems[idx];
-            if (item && item.type === "app" && item.data && item.data.path === appPath) {
-              if (window.__TAURI__?.core?.convertFileSrc) {
-                img.src = window.__TAURI__.core.convertFileSrc(item.data.icon_path);
+          const imgElements = document.querySelectorAll("img.result-icon");
+          imgElements.forEach((img) => {
+            if (img.getAttribute("data-app-path") === appPath) {
+              const iconPath = img.getAttribute("data-icon-path");
+              if (iconPath && window.__TAURI__?.core?.convertFileSrc) {
+                img.src = window.__TAURI__.core.convertFileSrc(iconPath);
               }
             }
           });
@@ -168,9 +175,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 function renderRecentApps() {
   recentGrid.innerHTML = "";
   
-  // Filter apps matching recent list
-  const recentApps = appItems
-    .filter(app => settings.recent_apps.includes(app.path))
+  // Decouple from filesystem scan order: map recent_apps in exact chronological order
+  const recentApps = settings.recent_apps
+    .map(path => appItems.find(app => app.path === path))
+    .filter(Boolean)
     .slice(0, 8);
 
   // If no recent apps yet, use first 8 scanned apps as defaults
@@ -248,6 +256,8 @@ async function handleSearch() {
   const query = searchInput.value;
   selectedIndex = 0;
 
+  const currentSearchId = ++lastSearchId;
+
   if (query.trim() === "") {
     // Show recent screen
     welcomeScreen.style.display = "block";
@@ -319,6 +329,7 @@ async function handleSearch() {
       searchIndicator.textContent = "🔍";
       try {
         const results = await invoke("search_apps", { query });
+        if (currentSearchId !== lastSearchId) return; // Stale query check
         
         filteredItems = results.slice(0, 7).map(app => ({
           type: "app",
@@ -343,7 +354,11 @@ async function handleSearch() {
         }
       } catch (e) {
         console.error("[FromZero] Search error:", e);
-        filteredItems = [];
+        if (currentSearchId === lastSearchId) {
+          filteredItems = [];
+        } else {
+          return;
+        }
       }
       renderResults();
     }
@@ -373,6 +388,10 @@ function renderResults() {
       iconWrapper.appendChild(emojiSpan);
     } else {
       const iconEl = createIconElement(item.icon, "result-icon");
+      if (item.type === "app" && item.data && iconEl.tagName === "IMG") {
+        iconEl.setAttribute("data-app-path", item.data.path);
+        iconEl.setAttribute("data-icon-path", item.data.icon_path);
+      }
       iconWrapper.appendChild(iconEl);
     }
 
@@ -425,13 +444,15 @@ async function executeItemAction(item) {
       const app = item.data;
       await invoke("launch_app", { path: app.path });
       
-      // Update frequency stats
-      if (!settings.recent_apps.includes(app.path)) {
-        settings.recent_apps.unshift(app.path);
-        settings.recent_apps = settings.recent_apps.slice(0, 16);
-        await invoke("update_settings", { settings });
-        renderRecentApps();
+      // Update chronological recent apps list (bump existing app to front)
+      const recentIndex = settings.recent_apps.indexOf(app.path);
+      if (recentIndex > -1) {
+        settings.recent_apps.splice(recentIndex, 1);
       }
+      settings.recent_apps.unshift(app.path);
+      settings.recent_apps = settings.recent_apps.slice(0, 16);
+      await invoke("update_settings", { settings });
+      renderRecentApps();
     } 
     else if (item.type === "sys") {
       await invoke("execute_sys_command", { command: item.data });

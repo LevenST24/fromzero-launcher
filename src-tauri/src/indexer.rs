@@ -49,6 +49,8 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
 
     // PowerShell script to recursively query start menu and resolve all shortcut links safely using WScript.Shell COM
     let ps_command = r#"
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+        $OutputEncoding = [System.Text.Encoding]::UTF8;
         $sh = New-Object -ComObject WScript.Shell;
         $paths = @("C:\ProgramData\Microsoft\Windows\Start Menu\Programs");
         if ($env:APPDATA) {
@@ -121,7 +123,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 seen_names.insert(item.name.clone());
 
                 // Generate safe cached icon path
-                let icon_name = format!("{:x}.png", md5_hash(&item.path));
+                let icon_name = format!("{:x}.png", get_path_hash(&item.path));
                 let mut icon_path = cache_dir.clone();
                 icon_path.push("icons");
                 let _ = fs::create_dir_all(&icon_path);
@@ -145,13 +147,11 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     apps
 }
 
-fn md5_hash(input: &str) -> u128 {
-    let mut hash: u128 = 0;
-    for byte in input.bytes() {
-        hash = hash.wrapping_add(byte as u128);
-        hash = hash.wrapping_mul(16777619);
-    }
-    hash
+fn get_path_hash(input: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
@@ -167,19 +167,20 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                 continue;
             }
 
-            // Extract using PowerShell Draw Icon API
-            let ps_script = format!(
-                r#"Add-Type -AssemblyName System.Drawing; [System.Drawing.Icon]::ExtractAssociatedIcon('{}').ToBitmap().Save('{}', [System.Drawing.Imaging.ImageFormat]::Png)"#,
-                target_path.replace('\'', "''"),
-                app.icon_path.replace('\'', "''")
-            );
-
             // Execute completely hidden in the background without console flashing
             #[cfg(target_os = "windows")]
             use std::os::windows::process::CommandExt;
 
             let mut cmd = std::process::Command::new("powershell");
-            cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script]);
+            cmd.args([
+                "-NoProfile",
+                "-WindowStyle", "Hidden",
+                "-Command",
+                "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; [System.Drawing.Icon]::ExtractAssociatedIcon($env:TARGET_PATH).ToBitmap().Save($env:ICON_PATH, [System.Drawing.Imaging.ImageFormat]::Png)"
+            ]);
+            cmd.env("TARGET_PATH", target_path);
+            cmd.env("ICON_PATH", &app.icon_path);
+
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 

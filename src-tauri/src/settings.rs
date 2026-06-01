@@ -55,8 +55,16 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
     if let Some(path) = get_settings_path(app_handle) {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        fs::write(path, content)
-            .map_err(|e| format!("Failed to write settings file: {}", e))?;
+        
+        let mut tmp_path = path.clone();
+        tmp_path.set_extension("json.tmp");
+        
+        fs::write(&tmp_path, content)
+            .map_err(|e| format!("Failed to write temporary settings file: {}", e))?;
+            
+        fs::rename(&tmp_path, &path)
+            .map_err(|e| format!("Failed to atomically replace settings file: {}", e))?;
+            
         Ok(())
     } else {
         Err("Failed to resolve settings path".to_string())
