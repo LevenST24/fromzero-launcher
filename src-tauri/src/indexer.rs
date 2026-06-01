@@ -45,7 +45,7 @@ pub fn get_pinyin(text: &str) -> (String, String) {
 
 pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     let mut apps = Vec::new();
-    let mut seen_names = HashSet::new();
+    let mut seen_targets = HashSet::new();
 
     // PowerShell script to recursively query start menu and resolve all shortcut links safely using WScript.Shell COM
     let ps_command = r#"
@@ -100,7 +100,13 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     .unwrap_or_default()
             };
 
-            let cache_dir = app_handle.path().app_cache_dir().unwrap_or_default();
+            let cache_dir = match app_handle.path().app_cache_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    eprintln!("[FromZero] Error: Failed to resolve cache directory: {e}");
+                    return apps;
+                }
+            };
             let _ = fs::create_dir_all(&cache_dir);
 
             for item in raw_items {
@@ -116,11 +122,11 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     continue;
                 }
 
-                // Prevent duplicates with same name (keep first occurrence)
-                if seen_names.contains(&item.name) {
+                // Prevent duplicates pointing to the same target executable
+                if seen_targets.contains(&item.target) {
                     continue;
                 }
-                seen_names.insert(item.name.clone());
+                seen_targets.insert(item.target.clone());
 
                 // Generate safe cached icon path
                 let icon_name = format!("{:x}.png", get_path_hash(&item.path));
@@ -148,14 +154,24 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
 }
 
 fn get_path_hash(input: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    input.hash(&mut hasher);
-    hasher.finish()
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[derive(Serialize, Deserialize)]
+struct IconExtractionItem {
+    target: String,
+    icon_path: String,
+    path: String,
 }
 
 pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
     thread::spawn(move || {
+        let mut items_to_extract = Vec::new();
         for app in apps {
             let icon_path = Path::new(&app.icon_path);
             if icon_path.exists() {
@@ -168,30 +184,50 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                 continue; // Only extract icons from files (skip folders to avoid PowerShell exceptions)
             }
 
-            // Execute completely hidden in the background without console flashing
-            #[cfg(target_os = "windows")]
-            use std::os::windows::process::CommandExt;
+            items_to_extract.push(IconExtractionItem {
+                target: app.target.clone(),
+                icon_path: app.icon_path.clone(),
+                path: app.path.clone(),
+            });
+        }
 
-            let mut cmd = std::process::Command::new("powershell");
-            cmd.args([
-                "-NoProfile",
-                "-WindowStyle", "Hidden",
-                "-Command",
-                "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; [System.Drawing.Icon]::ExtractAssociatedIcon($env:TARGET_PATH).ToBitmap().Save($env:ICON_PATH, [System.Drawing.Imaging.ImageFormat]::Png)"
-            ]);
-            cmd.env("TARGET_PATH", target_path);
-            cmd.env("ICON_PATH", &app.icon_path);
+        if items_to_extract.is_empty() {
+            return;
+        }
 
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        // Create temporary JSON file in cache folder to handle unlimited item counts safely without CLI args limits
+        let cache_dir = app_handle.path().app_cache_dir().unwrap_or_default();
+        let temp_json_path = cache_dir.join("icon_targets.json");
+        
+        if let Ok(json_content) = serde_json::to_string(&items_to_extract) {
+            if fs::write(&temp_json_path, json_content).is_ok() {
+                #[cfg(target_os = "windows")]
+                use std::os::windows::process::CommandExt;
 
-            let status = cmd.status();
+                let mut cmd = std::process::Command::new("powershell");
+                cmd.args([
+                    "-NoProfile",
+                    "-WindowStyle", "Hidden",
+                    "-Command",
+                    "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $items = Get-Content $env:TEMP_JSON_PATH -Raw -Encoding UTF8 | ConvertFrom-Json; foreach ($item in $items) { try { if ([System.IO::File]::Exists($item.target)) { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($item.target); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); Write-Output $item.path; } } catch {} }"
+                ]);
+                cmd.env("TEMP_JSON_PATH", &temp_json_path);
 
-            if let Ok(s) = status {
-                if s.success() {
-                    let _ = app_handle.emit("icon-ready", app.path.clone());
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+                if let Ok(output) = cmd.output() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    for line in out_str.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let _ = app_handle.emit("icon-ready", trimmed.to_string());
+                        }
+                    }
                 }
             }
+            // Clean up temporary JSON file
+            let _ = fs::remove_file(&temp_json_path);
         }
     });
 }

@@ -5,20 +5,40 @@ use tauri::{AppHandle, Manager, State};
 
 pub struct AppState {
     pub apps: Mutex<Vec<AppItem>>,
+    pub settings_lock: Mutex<()>,
 }
 
 #[tauri::command]
-pub fn get_settings(app_handle: AppHandle) -> Settings {
-    settings::load_settings(&app_handle)
+pub fn get_settings(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Settings, String> {
+    let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
+    Ok(settings::load_settings(&app_handle))
 }
 
 #[tauri::command]
-pub fn update_settings(app_handle: AppHandle, settings: Settings) -> Result<(), String> {
+pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
     settings::save_settings(&app_handle, &settings)?;
     
     // Dynamically register the new global hotkey
     register_shortcut_internal(&app_handle, &settings.shortcut)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: String) -> Result<Settings, String> {
+    let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
+    let mut settings = settings::load_settings(&app_handle);
+    
+    // Update chronological recent apps list (bump existing app to front)
+    let recent_index = settings.recent_apps.iter().position(|p| p == &path);
+    if let Some(idx) = recent_index {
+        settings.recent_apps.remove(idx);
+    }
+    settings.recent_apps.insert(0, path);
+    settings.recent_apps.truncate(16);
+    
+    settings::save_settings(&app_handle, &settings)?;
+    Ok(settings)
 }
 
 #[tauri::command]

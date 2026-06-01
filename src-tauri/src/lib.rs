@@ -87,10 +87,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             apps: Mutex::new(Vec::new()),
+            settings_lock: Mutex::new(()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            commands::bump_recent_app,
             commands::scan_apps,
             commands::search_apps,
             commands::launch_app,

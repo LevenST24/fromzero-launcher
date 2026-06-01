@@ -7,24 +7,39 @@ use tauri::Manager;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
+    #[serde(default = "default_shortcut")]
     pub shortcut: String,
+    #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_web_engines")]
     pub web_engines: HashMap<String, String>,
+    #[serde(default)]
     pub recent_apps: Vec<String>,
+}
+
+fn default_shortcut() -> String {
+    "Alt+Space".to_string()
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
+}
+
+fn default_web_engines() -> HashMap<String, String> {
+    let mut web_engines = HashMap::new();
+    web_engines.insert("g".to_string(), "https://google.com/search?q={}".to_string());
+    web_engines.insert("b".to_string(), "https://baidu.com/s?wd={}".to_string());
+    web_engines.insert("bi".to_string(), "https://bing.com/search?q={}".to_string());
+    web_engines.insert("gh".to_string(), "https://github.com/search?q={}".to_string());
+    web_engines
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        let mut web_engines = HashMap::new();
-        web_engines.insert("g".to_string(), "https://google.com/search?q={}".to_string());
-        web_engines.insert("b".to_string(), "https://baidu.com/s?wd={}".to_string());
-        web_engines.insert("bi".to_string(), "https://bing.com/search?q={}".to_string());
-        web_engines.insert("gh".to_string(), "https://github.com/search?q={}".to_string());
-
         Self {
-            shortcut: "Alt+Space".to_string(),
-            theme: "dark".to_string(),
-            web_engines,
+            shortcut: default_shortcut(),
+            theme: default_theme(),
+            web_engines: default_web_engines(),
             recent_apps: Vec::new(),
         }
     }
@@ -52,18 +67,36 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
 }
 
 pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write;
+    
     if let Some(path) = get_settings_path(app_handle) {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
         
         let mut tmp_path = path.clone();
-        tmp_path.set_extension("json.tmp");
+        // Construct filename cleanly to avoid set_extension side-effects
+        tmp_path.pop();
+        tmp_path.push("settings.json.tmp");
         
-        fs::write(&tmp_path, content)
-            .map_err(|e| format!("Failed to write temporary settings file: {}", e))?;
+        // Write temporary file and sync to disk
+        {
+            let mut file = File::create(&tmp_path)
+                .map_err(|e| format!("Failed to create temporary settings file: {}", e))?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| format!("Failed to write temporary settings file: {}", e))?;
+            file.sync_all()
+                .map_err(|e| format!("Failed to sync temporary settings file: {}", e))?;
+        }
             
+        // Windows atomic replacement safely: if rename fails because destination exists,
+        // we can try removing the destination first on Windows.
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        
         fs::rename(&tmp_path, &path)
-            .map_err(|e| format!("Failed to atomically replace settings file: {}", e))?;
+            .map_err(|e| format!("Failed to replace settings file: {}", e))?;
             
         Ok(())
     } else {

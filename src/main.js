@@ -1,8 +1,4 @@
 // === FromZero Launcher — Main Frontend Logic ===
-// Safety guard: wait for __TAURI__ to be ready
-const { invoke } = window.__TAURI__.core;
-const { getCurrentWindow } = window.__TAURI__.window;
-const appWindow = getCurrentWindow();
 
 // App state variables
 let appItems = [];
@@ -16,6 +12,9 @@ let searchDebounceTimeout = null;
 
 // Focus management: timestamp of last show (for debounce)
 let lastShowTime = 0;
+
+// IME Composition state tracking
+let isComposing = false;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -45,13 +44,48 @@ const SYSTEM_COMMANDS = [
 ];
 
 // =============================================
+// Tauri Core APIs Wrapper with Safety Guards
+// =============================================
+let invoke = null;
+let appWindow = null;
+
+function ensureTauri() {
+  if (!invoke || !appWindow) {
+    if (window.__TAURI__) {
+      invoke = window.__TAURI__.core.invoke;
+      appWindow = window.__TAURI__.window.getCurrentWindow();
+    } else {
+      console.warn("[FromZero] __TAURI__ not found, setting up fallback mocks");
+      invoke = async (cmd, args) => {
+        console.log(`[Mock Invoke] ${cmd}`, args);
+        if (cmd === "get_settings") {
+          return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [] };
+        }
+        if (cmd === "scan_apps") return [];
+        if (cmd === "search_apps") return [];
+        return {};
+      };
+      appWindow = {
+        hide: async () => console.log("[Mock AppWindow] hide"),
+        show: async () => console.log("[Mock AppWindow] show"),
+        setFocus: async () => console.log("[Mock AppWindow] setFocus"),
+        listen: (event, callback) => {
+          console.log(`[Mock AppWindow] listen for ${event}`);
+          return () => {};
+        }
+      };
+    }
+  }
+}
+
+ensureTauri();
+
+// =============================================
 // Window Focus/Blur Management (JS-side with debounce)
 // =============================================
 
-// When the window gains focus: record timestamp, auto-focus search input
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
-  // Auto-focus the search input when window becomes visible
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
@@ -59,27 +93,18 @@ window.addEventListener("focus", () => {
   }, 50);
 });
 
-// When the window loses focus: hide after a short debounce
-// This prevents the "instant hide" race condition that occurs when
-// the window is shown but hasn't fully received focus yet.
 window.addEventListener("blur", () => {
   const timeSinceShow = Date.now() - lastShowTime;
-  // Only auto-hide if window has been visible for at least 300ms
-  // This prevents the race condition where show() triggers an
-  // immediate Focused(false) before focus is actually gained
   if (timeSinceShow < 300) {
-    return; // Too soon — ignore this blur, it's a transient state
+    return;
   }
-
-  // Don't hide if settings modal is open (user is interacting with a dropdown, etc.)
   if (settingsOverlay && settingsOverlay.classList.contains("active")) {
     return;
   }
-
   setTimeout(async () => {
-    // Double-check: is the document still unfocused after 120ms?
     if (!document.hasFocus()) {
       try {
+        ensureTauri();
         await appWindow.hide();
       } catch (e) {
         console.warn("[FromZero] Failed to hide window:", e);
@@ -94,124 +119,133 @@ window.addEventListener("blur", () => {
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     console.log("[FromZero] Initializing...");
-    lastShowTime = Date.now(); // Mark initial show time
+    lastShowTime = Date.now();
+    ensureTauri();
 
-    // 1. Load settings
-    settings = await invoke("get_settings");
+    try {
+      const loaded = await invoke("get_settings");
+      settings = { ...settings, ...loaded };
+      settings.recent_apps = settings.recent_apps || [];
+      settings.web_engines = settings.web_engines || {};
+    } catch (e) {
+      console.error("[FromZero] Failed to load settings, using default:", e);
+    }
+
     applyTheme(settings.theme);
-    shortcutDisplay.textContent = settings.shortcut;
-    themeSelect.value = settings.theme;
+    if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Alt+Space";
+    if (themeSelect) themeSelect.value = settings.theme || "dark";
 
-    // 2. Scan applications from Start Menu
-    footerStatus.textContent = "正在扫描开始菜单...";
+    if (footerStatus) footerStatus.textContent = "正在扫描开始菜单...";
     try {
       appItems = await invoke("scan_apps");
-      footerStatus.textContent = `已成功加载 ${appItems.length} 个应用`;
+      if (footerStatus) footerStatus.textContent = `已成功加载 ${appItems.length} 个应用`;
       console.log(`[FromZero] Loaded ${appItems.length} apps`);
     } catch (scanError) {
       console.error("[FromZero] Scan error:", scanError);
-      footerStatus.textContent = "应用扫描失败，请检查日志";
+      if (footerStatus) footerStatus.textContent = "应用扫描失败，请检查日志";
     }
 
-    // 3. Render frequent/recent apps
     renderRecentApps();
 
-    // 4. Initialize search focus
-    searchInput.focus();
+    if (searchInput) searchInput.focus();
 
-    // 5. Setup search input listener with 100ms debounce
-    searchInput.addEventListener("input", () => {
-      clearTimeout(searchDebounceTimeout);
-      searchDebounceTimeout = setTimeout(handleSearch, 100);
-    });
-
-    // 6. Setup keyboard event listener
-    window.addEventListener("keydown", handleGlobalKeys);
-
-    // 7. Setup Settings toggle clicks
-    settingsToggle.addEventListener("click", openSettings);
-    settingsClose.addEventListener("click", closeSettings);
-    settingsCancel.addEventListener("click", closeSettings);
-    settingsSave.addEventListener("click", saveSettingsConfig);
-
-    // 8. Dynamic shortcut recorder hook
-    recordBtn.addEventListener("click", toggleRecordingShortcut);
-
-    // 9. Register background icon loading completion listener
-    if (window.__TAURI__?.event?.listen) {
-      window.__TAURI__.event.listen("icon-ready", (event) => {
-        const appPath = event.payload;
-        console.log(`[FromZero] Dynamically loaded icon for: ${appPath}`);
-        
-        // Re-render recent apps grid to show newly loaded icon
-        renderRecentApps();
-        
-        // Dynamically update any matching icons in the search results DOM
-        // without doing a full fuzzy search, to preserve selection index and focus!
-        const query = searchInput.value.trim();
-        if (query !== "") {
-          const imgElements = document.querySelectorAll("img.result-icon");
-          imgElements.forEach((img) => {
-            if (img.getAttribute("data-app-path") === appPath) {
-              const iconPath = img.getAttribute("data-icon-path");
-              if (iconPath && window.__TAURI__?.core?.convertFileSrc) {
-                img.src = window.__TAURI__.core.convertFileSrc(iconPath);
-              }
-            }
-          });
-        }
+    if (searchInput) {
+      searchInput.addEventListener("compositionstart", () => {
+        isComposing = true;
+      });
+      searchInput.addEventListener("compositionend", () => {
+        isComposing = false;
+        clearTimeout(searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(handleSearch, 100);
+      });
+      searchInput.addEventListener("input", () => {
+        if (isComposing) return;
+        clearTimeout(searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(handleSearch, 100);
       });
     }
 
-    console.log("[FromZero] ✓ Frontend initialization complete");
+    window.addEventListener("keydown", handleGlobalKeys);
 
+    if (settingsToggle) settingsToggle.addEventListener("click", openSettings);
+    if (settingsClose) settingsClose.addEventListener("click", closeSettings);
+    if (settingsCancel) settingsCancel.addEventListener("click", closeSettings);
+    if (settingsSave) settingsSave.addEventListener("click", saveSettingsConfig);
+
+    if (recordBtn) recordBtn.addEventListener("click", toggleRecordingShortcut);
+
+    if (window.__TAURI__) {
+      appWindow.listen("tauri://focus", () => {
+        lastShowTime = Date.now();
+        if (searchInput) searchInput.focus();
+      });
+
+      if (window.__TAURI__.event?.listen) {
+        window.__TAURI__.event.listen("icon-ready", (event) => {
+          const appPath = event.payload;
+          const recentCard = document.querySelector(`.recent-card[data-app-path="${CSS.escape(appPath)}"]`);
+          const app = appItems.find(a => a.path === appPath);
+          if (recentCard && app) {
+            const existingIcon = recentCard.querySelector(".recent-icon");
+            if (existingIcon) {
+              const newIcon = createIconElement(app.icon_path, "recent-icon");
+              recentCard.replaceChild(newIcon, existingIcon);
+            }
+          }
+          const resultIcons = document.querySelectorAll(".result-icon");
+          resultIcons.forEach((el) => {
+            if (el.getAttribute("data-app-path") === appPath) {
+              const app = appItems.find(a => a.path === appPath);
+              if (app && app.icon_path) {
+                const newIcon = createIconElement(app.icon_path, "result-icon");
+                newIcon.setAttribute("data-app-path", appPath);
+                newIcon.setAttribute("data-icon-path", app.icon_path);
+                if (el.parentElement) {
+                  el.parentElement.replaceChild(newIcon, el);
+                }
+              }
+            }
+          });
+        });
+      }
+    }
+    console.log("[FromZero] ✓ Frontend initialization complete");
   } catch (error) {
     console.error("[FromZero] Initialization error:", error);
-    footerStatus.textContent = "初始化失败，请重试";
+    if (footerStatus) footerStatus.textContent = "初始化失败，请重试";
   }
 });
 
-// Render the 8 most recently/frequently used apps
 function renderRecentApps() {
+  if (!recentGrid) return;
   recentGrid.innerHTML = "";
-  
-  // Decouple from filesystem scan order: map recent_apps in exact chronological order
-  const recentApps = settings.recent_apps
+  const recentApps = (settings.recent_apps || [])
     .map(path => appItems.find(app => app.path === path))
     .filter(Boolean)
     .slice(0, 8);
-
-  // If no recent apps yet, use first 8 scanned apps as defaults
   const displayApps = recentApps.length > 0 ? recentApps : appItems.slice(0, 8);
-
   if (displayApps.length === 0) {
     recentGrid.innerHTML = `<div style="grid-column: span 4; color: var(--text-dim); text-align: center; padding: 20px;">无可用应用</div>`;
     return;
   }
-
   displayApps.forEach(app => {
     const card = document.createElement("div");
     card.className = "recent-card";
     card.title = app.target;
-
-    // Create icon — use convertFileSrc for proper Tauri asset protocol
+    card.setAttribute("data-app-path", app.path);
     const iconEl = createIconElement(app.icon_path, "recent-icon");
     const name = document.createElement("div");
     name.className = "recent-name";
     name.textContent = app.name;
-
     card.appendChild(iconEl);
     card.appendChild(name);
-
     card.addEventListener("click", () => executeItemAction({ type: "app", data: app }));
     recentGrid.appendChild(card);
   });
 }
 
-// Create icon element with proper fallback
 function createIconElement(iconPath, cssClass) {
   if (!iconPath || iconPath === "⚡" || iconPath === "📂" || iconPath === "🌐") {
-    // Emoji icon
     const span = document.createElement("span");
     span.className = (cssClass || "") + " emoji";
     span.textContent = iconPath || "📱";
@@ -219,66 +253,58 @@ function createIconElement(iconPath, cssClass) {
     if (cssClass === "recent-icon") span.style.marginBottom = "8px";
     return span;
   }
-
   const img = document.createElement("img");
   img.className = cssClass || "";
-
-  // Build asset URL: convertFileSrc encodes the path properly
+  img.loading = "lazy";
+  let loadedSuccessfully = false;
+  const replaceWithFallbackEmoji = (element, className) => {
+    const fallback = document.createElement("span");
+    fallback.className = (className || "") + " emoji";
+    fallback.textContent = "📦";
+    fallback.style.fontSize = className === "recent-icon" ? "26px" : "20px";
+    if (className === "recent-icon") fallback.style.marginBottom = "8px";
+    if (element.hasAttribute("data-app-path")) fallback.setAttribute("data-app-path", element.getAttribute("data-app-path"));
+    if (element.hasAttribute("data-icon-path")) fallback.setAttribute("data-icon-path", element.getAttribute("data-icon-path"));
+    if (element.parentElement) element.parentElement.replaceChild(fallback, element);
+  };
+  img.onerror = () => {
+    if (loadedSuccessfully) return;
+    replaceWithFallbackEmoji(img, cssClass);
+  };
   try {
+    ensureTauri();
     if (window.__TAURI__?.core?.convertFileSrc) {
       img.src = window.__TAURI__.core.convertFileSrc(iconPath);
+      loadedSuccessfully = true;
     } else {
-      // Manual fallback: encode the full path for asset protocol
       img.src = `https://asset.localhost/${encodeURIComponent(iconPath)}`;
+      loadedSuccessfully = true;
     }
   } catch (e) {
     console.warn("[FromZero] Icon URL error:", e);
+    setTimeout(() => replaceWithFallbackEmoji(img, cssClass), 0);
   }
-
-  img.loading = "lazy";
-  img.onerror = () => {
-    // Replace with emoji fallback on any load error
-    const fallback = document.createElement("span");
-    fallback.className = (cssClass || "") + " emoji";
-    fallback.textContent = "📦";
-    fallback.style.fontSize = cssClass === "recent-icon" ? "26px" : "20px";
-    if (cssClass === "recent-icon") fallback.style.marginBottom = "8px";
-    if (img.parentElement) {
-      img.parentElement.replaceChild(fallback, img);
-    }
-  };
-
   return img;
 }
 
-// Global search routing
 async function handleSearch() {
+  if (!searchInput) return;
   const query = searchInput.value;
   selectedIndex = 0;
-
   const currentSearchId = ++lastSearchId;
-
   if (query.trim() === "") {
-    // Show recent screen
-    welcomeScreen.style.display = "block";
-    resultsList.style.display = "none";
+    if (welcomeScreen) welcomeScreen.style.display = "block";
+    if (resultsList) resultsList.style.display = "none";
     filteredItems = [];
-    searchIndicator.textContent = "🔍";
+    if (searchIndicator) searchIndicator.textContent = "🔍";
     return;
   }
-
-  welcomeScreen.style.display = "none";
-  resultsList.style.display = "block";
-
-  // Check router matching
+  if (welcomeScreen) welcomeScreen.style.display = "none";
+  if (resultsList) resultsList.style.display = "block";
   if (query.startsWith(">")) {
-    // 1. System Command router
-    searchIndicator.textContent = "⚡";
+    if (searchIndicator) searchIndicator.textContent = "⚡";
     const subQuery = query.slice(1).trim().toLowerCase();
-    
-    filteredItems = SYSTEM_COMMANDS.filter(cmd => 
-      cmd.key.includes(subQuery) || cmd.name.toLowerCase().includes(subQuery)
-    ).map(cmd => ({
+    filteredItems = SYSTEM_COMMANDS.filter(cmd => cmd.key.includes(subQuery) || cmd.name.toLowerCase().includes(subQuery)).map(cmd => ({
       type: "sys",
       title: cmd.name,
       subtitle: cmd.desc,
@@ -286,12 +312,9 @@ async function handleSearch() {
       badge: cmd.badge,
       data: cmd.key
     }));
-    
     renderResults();
-  } 
-  else if (query.startsWith("/") || /^[a-zA-Z]:\\/.test(query)) {
-    // 2. Folder Navigation router
-    searchIndicator.textContent = "📂";
+  } else if (query.startsWith("/") || query.startsWith("\\\\") || /^[a-zA-Z]:\\/.test(query)) {
+    if (searchIndicator) searchIndicator.textContent = "📂";
     filteredItems = [{
       type: "folder",
       title: `快速打开文件夹: "${query}"`,
@@ -301,19 +324,16 @@ async function handleSearch() {
       data: query
     }];
     renderResults();
-  }
-  else {
-    // 3. Check for Web search engines carrying query content (e.g. "g query", "b query")
+  } else {
     const match = query.match(/^([a-zA-Z]+)\s+(.+)$/);
     if (match && settings.web_engines[match[1].toLowerCase()]) {
       const prefix = match[1].toLowerCase();
       const searchWord = match[2];
       const engineUrl = settings.web_engines[prefix];
       const targetUrl = engineUrl.replace("{}", encodeURIComponent(searchWord));
-      
-      const engineName = prefix === "g" ? "Google" : prefix === "b" ? "百度" : prefix === "bi" ? "Bing" : prefix === "gh" ? "GitHub" : prefix;
-      
-      searchIndicator.textContent = "🌐";
+      const knownEngines = { g: "Google", b: "百度", bi: "Bing", gh: "GitHub" };
+      const engineName = knownEngines[prefix] || (prefix.charAt(0).toUpperCase() + prefix.slice(1));
+      if (searchIndicator) searchIndicator.textContent = "🌐";
       filteredItems = [{
         type: "web",
         title: `在 ${engineName} 搜索: "${searchWord}"`,
@@ -323,14 +343,12 @@ async function handleSearch() {
         data: targetUrl
       }];
       renderResults();
-    } 
-    else {
-      // 4. Default: Start menu app fuzzy matching
-      searchIndicator.textContent = "🔍";
+    } else {
+      if (searchIndicator) searchIndicator.textContent = "🔍";
       try {
+        ensureTauri();
         const results = await invoke("search_apps", { query });
-        if (currentSearchId !== lastSearchId) return; // Stale query check
-        
+        if (currentSearchId !== lastSearchId) return;
         filteredItems = results.slice(0, 7).map(app => ({
           type: "app",
           title: app.name,
@@ -339,8 +357,6 @@ async function handleSearch() {
           badge: "应用",
           data: app
         }));
-
-        // Add a fallback web search option at the very bottom
         if (filteredItems.length < 7) {
           const defaultBaidu = `https://baidu.com/s?wd=${encodeURIComponent(query)}`;
           filteredItems.push({
@@ -354,33 +370,25 @@ async function handleSearch() {
         }
       } catch (e) {
         console.error("[FromZero] Search error:", e);
-        if (currentSearchId === lastSearchId) {
-          filteredItems = [];
-        } else {
-          return;
-        }
+        if (currentSearchId === lastSearchId) filteredItems = [];
       }
       renderResults();
     }
   }
 }
 
-// Render filtered item list
 function renderResults() {
+  if (!resultsList) return;
   resultsList.innerHTML = "";
-  
   if (filteredItems.length === 0) {
     resultsList.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dim); font-size: 13px;">无搜索匹配项</div>`;
     return;
   }
-
   filteredItems.forEach((item, index) => {
     const el = document.createElement("div");
     el.className = `result-item ${index === selectedIndex ? "selected" : ""}`;
-
     const iconWrapper = document.createElement("div");
     iconWrapper.className = "result-icon-wrapper";
-
     if (item.icon === "⚡" || item.icon === "📂" || item.icon === "🌐") {
       const emojiSpan = document.createElement("span");
       emojiSpan.className = "result-icon emoji";
@@ -388,207 +396,182 @@ function renderResults() {
       iconWrapper.appendChild(emojiSpan);
     } else {
       const iconEl = createIconElement(item.icon, "result-icon");
-      if (item.type === "app" && item.data && iconEl.tagName === "IMG") {
+      if (item.type === "app" && item.data) {
         iconEl.setAttribute("data-app-path", item.data.path);
         iconEl.setAttribute("data-icon-path", item.data.icon_path);
       }
       iconWrapper.appendChild(iconEl);
     }
-
     const info = document.createElement("div");
     info.className = "result-info";
-
     const title = document.createElement("div");
     title.className = "result-title";
     title.textContent = item.title;
-
     const subtitle = document.createElement("div");
     subtitle.className = "result-subtitle";
     subtitle.textContent = item.subtitle;
-
     info.appendChild(title);
     info.appendChild(subtitle);
-
     const badge = document.createElement("span");
     badge.className = "result-badge";
     badge.textContent = item.badge;
-
     const action = document.createElement("span");
     action.className = "result-action";
     action.textContent = "↵ 打开";
-
     el.appendChild(iconWrapper);
     el.appendChild(info);
     el.appendChild(badge);
     el.appendChild(action);
-
-    el.addEventListener("click", () => {
-      selectedIndex = index;
-      executeItemAction(item);
-    });
-
+    el.addEventListener("click", () => { selectedIndex = index; executeItemAction(item); });
     resultsList.appendChild(el);
   });
-
-  // Ensure selected item is visible
   const selectedEl = resultsList.children[selectedIndex];
-  if (selectedEl) {
-    selectedEl.scrollIntoView({ block: "nearest" });
-  }
+  if (selectedEl) selectedEl.scrollIntoView({ block: "nearest" });
 }
 
-// Execute operations
 async function executeItemAction(item) {
   try {
+    ensureTauri();
     if (item.type === "app") {
       const app = item.data;
       await invoke("launch_app", { path: app.path });
-      
-      // Update chronological recent apps list (bump existing app to front)
-      const recentIndex = settings.recent_apps.indexOf(app.path);
-      if (recentIndex > -1) {
-        settings.recent_apps.splice(recentIndex, 1);
+      try {
+        const updatedSettings = await invoke("bump_recent_app", { path: app.path });
+        settings = { ...settings, ...updatedSettings };
+        renderRecentApps();
+      } catch (bumpError) {
+        console.error("[FromZero] Failed thread-safe recent app bump:", bumpError);
       }
-      settings.recent_apps.unshift(app.path);
-      settings.recent_apps = settings.recent_apps.slice(0, 16);
-      await invoke("update_settings", { settings });
-      renderRecentApps();
-    } 
-    else if (item.type === "sys") {
+    } else if (item.type === "sys") {
       await invoke("execute_sys_command", { command: item.data });
-    } 
-    else if (item.type === "folder") {
+    } else if (item.type === "folder") {
       await invoke("open_folder", { path: item.data });
-    } 
-    else if (item.type === "web") {
+    } else if (item.type === "web") {
       await invoke("open_search", { url: item.data });
     }
-    
-    // Auto hide launcher on execution
     try {
       await appWindow.hide();
     } catch (e) {
       console.warn("[FromZero] Hide after action failed:", e);
     }
-    
-    // Clear input and reset view
-    searchInput.value = "";
+    if (searchInput) searchInput.value = "";
     handleSearch();
   } catch (error) {
     console.error("[FromZero] Action error:", error);
-    footerStatus.textContent = `执行失败: ${error}`;
+    if (footerStatus) footerStatus.textContent = `执行失败: ${error}`;
   }
 }
 
-// Keyboard navigation
-function handleGlobalKeys(e) {
-  // Check settings recording mode (don't intercept standard launcher actions)
+async function handleGlobalKeys(e) {
   if (isRecording) {
     e.preventDefault();
     recordShortcut(e);
     return;
   }
-
-  // Intercept settings modal focus
-  if (settingsOverlay.classList.contains("active")) {
-    if (e.key === "Escape") {
-      closeSettings();
-    }
+  if (settingsOverlay && settingsOverlay.classList.contains("active")) {
+    if (e.key === "Escape") closeSettings();
     return;
   }
-
   if (e.key === "ArrowDown") {
     e.preventDefault();
     if (filteredItems.length > 0) {
       selectedIndex = (selectedIndex + 1) % filteredItems.length;
       renderResults();
     }
-  } 
-  else if (e.key === "ArrowUp") {
+  } else if (e.key === "ArrowUp") {
     e.preventDefault();
     if (filteredItems.length > 0) {
       selectedIndex = (selectedIndex - 1 + filteredItems.length) % filteredItems.length;
       renderResults();
     }
-  } 
-  else if (e.key === "Enter") {
+  } else if (e.key === "Enter") {
     e.preventDefault();
+    if (searchDebounceTimeout) {
+      clearTimeout(searchDebounceTimeout);
+      searchDebounceTimeout = null;
+      await handleSearch();
+    }
     if (filteredItems.length > 0 && filteredItems[selectedIndex]) {
       executeItemAction(filteredItems[selectedIndex]);
     }
-  } 
-  else if (e.key === "Escape") {
+  } else if (e.key === "Escape") {
     e.preventDefault();
+    ensureTauri();
     appWindow.hide().catch(() => {});
-  } 
-  else if (e.ctrlKey && e.key === ",") {
+  } else if (e.ctrlKey && (e.key === "," || e.code === "Comma")) {
     e.preventDefault();
     openSettings();
   }
 }
 
-// Visual Theme application
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
 }
 
-// Settings modal control
 function openSettings() {
-  settingsOverlay.classList.add("active");
-  themeSelect.value = settings.theme;
-  shortcutDisplay.textContent = settings.shortcut;
+  if (settingsOverlay) settingsOverlay.classList.add("active");
+  if (themeSelect) themeSelect.value = settings.theme || "dark";
+  if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Alt+Space";
 }
 
 function closeSettings() {
-  settingsOverlay.classList.remove("active");
+  if (settingsOverlay) settingsOverlay.classList.remove("active");
   isRecording = false;
-  recordBtn.textContent = "录制组合键";
-  recordBtn.className = "record-btn";
-  // Refocus search input
-  searchInput.focus();
+  if (recordBtn) {
+    recordBtn.textContent = "录制组合键";
+    recordBtn.className = "record-btn";
+  }
+  if (searchInput) searchInput.focus();
 }
 
 async function saveSettingsConfig() {
   try {
-    settings.theme = themeSelect.value;
-    settings.shortcut = shortcutDisplay.textContent;
-    
+    ensureTauri();
+    if (themeSelect) settings.theme = themeSelect.value;
+    if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
     applyTheme(settings.theme);
-    
     await invoke("update_settings", { settings });
     closeSettings();
-    searchInput.focus();
+    if (searchInput) searchInput.focus();
   } catch (error) {
     console.error("[FromZero] Save settings error:", error);
-    footerStatus.textContent = `保存设置失败: ${error}`;
+    if (footerStatus) footerStatus.textContent = `保存设置失败: ${error}`;
   }
 }
 
-// Global hotkey recorder
 let isRecording = false;
-
 function toggleRecordingShortcut() {
   isRecording = !isRecording;
   if (isRecording) {
-    recordBtn.textContent = "请按下按键...";
-    recordBtn.classList.add("recording");
+    if (recordBtn) {
+      recordBtn.textContent = "请按下按键...";
+      recordBtn.classList.add("recording");
+    }
   } else {
-    recordBtn.textContent = "录制组合键";
-    recordBtn.classList.remove("recording");
+    if (recordBtn) {
+      recordBtn.textContent = "录制组合键";
+      recordBtn.classList.remove("recording");
+    }
   }
 }
 
+document.addEventListener("mousedown", (e) => {
+  if (isRecording && recordBtn && e.target !== recordBtn) {
+    toggleRecordingShortcut();
+  }
+});
+
 function recordShortcut(e) {
   const parts = [];
-  
   if (e.ctrlKey) parts.push("Control");
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
   if (e.metaKey) parts.push("Super");
-
   const ignoreKeys = ["Control", "Alt", "Shift", "Meta", "CapsLock", "NumLock"];
+  const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
+  const isFunctionKey = /^F[1-9][0-2]?$/.test(e.key);
+  if (!hasModifier && !isFunctionKey) return;
   if (!ignoreKeys.includes(e.key)) {
-    // Format key name for Tauri global shortcut parsing
     let keyName = e.key;
     if (keyName === " ") keyName = "Space";
     else if (keyName === "ArrowUp") keyName = "Up";
@@ -597,12 +580,10 @@ function recordShortcut(e) {
     else if (keyName === "ArrowRight") keyName = "Right";
     else if (keyName === "Escape") keyName = "Esc";
     else if (keyName.length === 1) keyName = keyName.toUpperCase();
-    
     parts.push(keyName);
   }
-
   if (parts.length > 0 && !ignoreKeys.includes(e.key)) {
-    shortcutDisplay.textContent = parts.join("+");
+    if (shortcutDisplay) shortcutDisplay.textContent = parts.join("+");
     toggleRecordingShortcut();
   }
 }
