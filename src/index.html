@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FromZero Launcher</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div class="launcher-container" id="launcher-container">
+      <!-- 搜索输入区域 -->
+      <header class="search-bar">
+        <span class="search-icon" id="search-indicator">🔍</span>
+        <div class="search-input-wrapper">
+          <input
+            type="text"
+            id="search-input"
+            class="search-input"
+            placeholder="搜索应用、系统命令... 或输入 'g 搜索词'，'b 搜索词'"
+            autocomplete="off"
+            spellcheck="false"
+            autofocus
+          />
+        </div>
+        <button class="settings-btn" id="settings-toggle" title="设置 (Ctrl+,)">
+          ⚙️
+        </button>
+      </header>
+
+      <!-- 搜索结果/快捷展示区域 -->
+      <main class="results-area" id="results-area">
+        <!-- 默认空状态显示最近使用 -->
+        <div class="welcome-screen" id="welcome-screen">
+          <h2 class="welcome-title">常用应用</h2>
+          <div class="recent-grid" id="recent-grid">
+            <!-- 由 JS 动态渲染 -->
+          </div>
+        </div>
+
+        <!-- 结果列表，由 JS 动态渲染 -->
+        <div id="results-list" style="display: none;"></div>
+      </main>
+
+      <!-- 底部状态指示栏 -->
+      <footer class="footer">
+        <div class="footer-status" id="footer-status">已加载 0 个应用</div>
+        <div class="footer-shortcuts">
+          <span><span class="key-badge">↑↓</span> 选择</span>
+          <span><span class="key-badge">Enter</span> 打开</span>
+          <span><span class="key-badge">Esc</span> 隐藏</span>
+        </div>
+      </footer>
+
+      <!-- 设置悬浮面板 -->
+      <div class="modal-overlay" id="settings-overlay">
+        <div class="settings-modal">
+          <div class="modal-header">
+            <h3 class="modal-title">FromZero Launcher 设置</h3>
+            <button class="modal-close" id="settings-close">✕</button>
+          </div>
+
+          <!-- 自定义快捷键录制 -->
+          <div class="settings-group">
+            <label class="settings-label">全局唤起快捷键</label>
+            <div class="shortcut-recorder">
+              <span class="shortcut-text" id="shortcut-display">Alt+Space</span>
+              <button class="record-btn" id="record-btn">录制组合键</button>
+            </div>
+          </div>
+
+          <!-- 主题切换 -->
+          <div class="settings-group">
+            <label class="settings-label">视觉主题</label>
+            <select class="settings-select" id="theme-select">
+              <option value="dark">极简暗黑 (Dark)</option>
+              <option value="light">清透高雅 (Light)</option>
+            </select>
+          </div>
+
+          <!-- 网页搜索配置 -->
+          <div class="settings-group">
+            <label class="settings-label">搜索引擎前缀</label>
+            <input
+              type="text"
+              class="settings-input"
+              style="font-family: var(--font-mono); font-size: 12px; margin-bottom: 6px;"
+              value="g : Google | b : 百度 | bi : Bing | gh : GitHub"
+              disabled
+            />
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn btn-secondary" id="settings-cancel">取消</button>
+            <button class="btn btn-primary" id="settings-save">保存配置</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
