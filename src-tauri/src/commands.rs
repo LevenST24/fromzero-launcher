@@ -105,12 +105,30 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
 
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Err(format!("应用文件路径不存在: {}", path));
+    }
     open::that(&path).map_err(|e| format!("Failed to launch app: {}", e))
 }
 
 #[tauri::command]
 pub fn open_folder(path: String) -> Result<(), String> {
-    open::that(&path).map_err(|e| format!("Failed to open folder: {}", e))
+    // Clean and translate Unix-style folder paths to Windows paths
+    let mut resolved = path.replace('/', "\\");
+    if resolved == "\\" {
+        resolved = "C:\\".to_string();
+    } else if resolved.starts_with('\\') && !resolved.starts_with("\\\\") {
+        // e.g. "/Windows" -> "C:\Windows"
+        resolved = format!("C:{}", resolved);
+    }
+
+    let path_buf = std::path::PathBuf::from(&resolved);
+    if !path_buf.exists() {
+        return Err(format!("文件夹路径不存在: {}", resolved));
+    }
+
+    open::that(&resolved).map_err(|e| format!("Failed to open folder: {}", e))
 }
 
 #[tauri::command]
