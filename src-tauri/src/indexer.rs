@@ -73,10 +73,16 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         }
     "#;
 
-    // Run powershell completely hidden and capture output
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_command])
-        .output();
+    // Run powershell completely hidden without console flashing
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_command]);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let output = cmd.output();
 
     if let Ok(out) = output {
         let json_str = String::from_utf8_lossy(&out.stdout);
@@ -168,10 +174,16 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                 app.icon_path.replace('\'', "''")
             );
 
-            // Execute completely hidden in the background
-            let status = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script])
-                .status();
+            // Execute completely hidden in the background without console flashing
+            #[cfg(target_os = "windows")]
+            use std::os::windows::process::CommandExt;
+
+            let mut cmd = std::process::Command::new("powershell");
+            cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_script]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+            let status = cmd.status();
 
             if let Ok(s) = status {
                 if s.success() {

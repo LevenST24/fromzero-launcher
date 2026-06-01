@@ -11,24 +11,24 @@
   /* ── Glass Surface Colors ──
      Key insight: the container bg must be VERY transparent
      so native Acrylic blur shows through clearly. */
-  --glass-bg: rgba(16, 16, 22, 0.22);
-  --glass-surface: rgba(255, 255, 255, 0.045);
-  --glass-hover: rgba(255, 255, 255, 0.07);
-  --glass-selected: rgba(108, 143, 255, 0.12);
-  --glass-card: rgba(255, 255, 255, 0.05);
-  --glass-card-hover: rgba(255, 255, 255, 0.10);
-  --glass-input: rgba(0, 0, 0, 0.12);
+  --glass-bg: rgba(20, 20, 28, 0.55);
+  --glass-surface: rgba(255, 255, 255, 0.05);
+  --glass-hover: rgba(255, 255, 255, 0.08);
+  --glass-selected: rgba(108, 143, 255, 0.16);
+  --glass-card: rgba(255, 255, 255, 0.06);
+  --glass-card-hover: rgba(255, 255, 255, 0.12);
+  --glass-input: rgba(0, 0, 0, 0.20);
 
   /* ── Accent ── */
   --accent: #6C8FFF;
-  --accent-dim: rgba(108, 143, 255, 0.7);
-  --accent-glow: rgba(108, 143, 255, 0.25);
+  --accent-dim: rgba(108, 143, 255, 0.8);
+  --accent-glow: rgba(108, 143, 255, 0.35);
   --accent-gradient: linear-gradient(135deg, #6C8FFF, #A78BFA);
 
   /* ── Text ── */
-  --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.50);
-  --text-dim: rgba(255, 255, 255, 0.22);
+  --text-primary: rgba(255, 255, 255, 0.96);
+  --text-secondary: rgba(255, 255, 255, 0.80);
+  --text-dim: rgba(255, 255, 255, 0.52);
 
   /* ── Borders ── */
   --border: rgba(255, 255, 255, 0.08);
@@ -50,21 +50,21 @@
 
 /* ── Light Theme ── */
 [data-theme="light"] {
-  --glass-bg: rgba(245, 245, 250, 0.35);
-  --glass-surface: rgba(255, 255, 255, 0.30);
-  --glass-hover: rgba(0, 0, 0, 0.04);
-  --glass-selected: rgba(90, 130, 255, 0.10);
-  --glass-card: rgba(255, 255, 255, 0.40);
-  --glass-card-hover: rgba(255, 255, 255, 0.55);
-  --glass-input: rgba(0, 0, 0, 0.03);
+  --glass-bg: rgba(255, 255, 255, 0.70);
+  --glass-surface: rgba(255, 255, 255, 0.40);
+  --glass-hover: rgba(0, 0, 0, 0.05);
+  --glass-selected: rgba(74, 114, 255, 0.12);
+  --glass-card: rgba(255, 255, 255, 0.50);
+  --glass-card-hover: rgba(255, 255, 255, 0.65);
+  --glass-input: rgba(0, 0, 0, 0.05);
   --accent: #4A72FF;
-  --accent-glow: rgba(74, 114, 255, 0.15);
-  --text-primary: rgba(0, 0, 0, 0.88);
-  --text-secondary: rgba(0, 0, 0, 0.50);
-  --text-dim: rgba(0, 0, 0, 0.22);
-  --border: rgba(0, 0, 0, 0.06);
-  --border-light: rgba(0, 0, 0, 0.10);
-  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --accent-glow: rgba(74, 114, 255, 0.20);
+  --text-primary: rgba(0, 0, 0, 0.90);
+  --text-secondary: rgba(0, 0, 0, 0.72);
+  --text-dim: rgba(0, 0, 0, 0.45);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-light: rgba(0, 0, 0, 0.12);
+  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.16);
 }
 
 /* ── Reset ── */
@@ -408,7 +408,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  opacity: 0.75;
 }
 
 .result-badge {
