@@ -1,4 +1,4 @@
-# 🌌 FromZero Launcher (极简亚克力毛玻璃启动器)
+# 🌌 FromZero Launcher
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.x-blue.svg?style=flat-square&logo=tauri)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
