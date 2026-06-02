@@ -8,6 +8,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewWindow};
 
+#[allow(dead_code)]
 fn apply_window_vibrancy(window: &WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
@@ -104,6 +105,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(AppState {
             apps: Mutex::new(Vec::new()),
             settings_lock: Mutex::new(()),
@@ -118,12 +123,20 @@ pub fn run() {
             commands::open_folder,
             commands::open_search,
             commands::execute_sys_command,
+            commands::debug_log,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
 
-            // 1. Register global shortcut from settings
+            // 1. Load settings
             let settings = settings::load_settings(app.handle());
+
+            // 2. Refresh registry autostart registration if enabled to cure path drifts
+            if settings.autostart {
+                let _ = settings::apply_autostart_setting(app.handle(), true);
+            }
+
+            // 3. Register global shortcut from settings
             eprintln!("[FromZero] Registering shortcut: {}", settings.shortcut);
             match commands::register_shortcut_internal(app.handle(), &settings.shortcut) {
                 Ok(_) => eprintln!("[FromZero] ✓ Shortcut '{}' registered successfully", settings.shortcut),
@@ -138,17 +151,29 @@ pub fn run() {
                 }
             }
 
-            // 2. Configure System Tray
+            // 4. Configure System Tray
             setup_tray(app)?;
 
-            // 3. Show window FIRST, then apply vibrancy
-            //    (Some systems require the window to be visible for vibrancy to take effect)
-            eprintln!("[FromZero] Showing window...");
-            let _ = window.show();
-            let _ = window.set_focus();
+            // 5. Silent Boot/Tray Boot Implementation
+            let args: Vec<String> = std::env::args().collect();
+            let is_autostart = args.iter().any(|arg| arg == "--autostart");
 
-            // 4. Apply Mica/Acrylic AFTER window is visible
-            apply_window_vibrancy(&window);
+            if !is_autostart {
+                eprintln!("[FromZero] Showing window...");
+                let _ = window.show();
+                let _ = window.set_focus();
+            } else {
+                eprintln!("[FromZero] Booted silently via autostart. Window remains hidden in tray.");
+            }
+
+            // 6. Apply Mica/Acrylic AFTER window setup
+            // Commented out to eliminate the Windows 11 DWM rendering bug where applying native Mica/Acrylic
+            // on transparent borderless windows forces a solid black/grey shadow box on the bottom and right margins.
+            // Our CSS backdrop-filter handles the Liquid Glass frosted blur beautifully inside the client area.
+            // apply_window_vibrancy(&window);
+
+            #[cfg(target_os = "windows")]
+            remove_dwm_border(&window);
 
             eprintln!("[FromZero] ✓ Setup complete");
             Ok(())
@@ -156,3 +181,63 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(target_os = "windows")]
+fn remove_dwm_border(window: &WebviewWindow) {
+    use std::ffi::c_void;
+
+    type DwmSetWindowAttributeFn = unsafe extern "system" fn(
+        hwnd: *mut c_void,
+        dw_attribute: u32,
+        pv_attribute: *const c_void,
+        cb_attribute: u32,
+    ) -> i32;
+
+    unsafe {
+        let module_name = std::ffi::CString::new("dwmapi.dll").unwrap();
+        let handle = winapi::um::libloaderapi::LoadLibraryA(module_name.as_ptr());
+        if !handle.is_null() {
+            let func_name = std::ffi::CString::new("DwmSetWindowAttribute").unwrap();
+            let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle, func_name.as_ptr());
+            if !proc_addr.is_null() {
+                let dwm_set_window_attribute: DwmSetWindowAttributeFn = std::mem::transmute(proc_addr);
+                if let Ok(hwnd) = window.hwnd() {
+                    let raw_hwnd = hwnd.0 as *mut c_void;
+
+                    // 1. Disable native DWM window rounding (Windows 11).
+                    // This is critical because DWM rounding natively draws a 1px border around the window.
+                    // By forcing DONOTROUND, the window remains a perfect native rectangle, and our CSS border-radius
+                    // rounds it smoothly inside WebView2 without drawing any native system borders.
+                    let corner_preference: u32 = 1; // DWMWCP_DONOTROUND = 1
+                    let hr_corner = dwm_set_window_attribute(
+                        raw_hwnd,
+                        33, // DWMWA_WINDOW_CORNER_PREFERENCE = 33
+                        &corner_preference as *const _ as *const c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                    if hr_corner == 0 {
+                        eprintln!("[FromZero] ✓ Successfully disabled native DWM window rounding");
+                    } else {
+                        eprintln!("[FromZero] DwmSetWindowAttribute failed to disable native rounding: hr = {}", hr_corner);
+                    }
+
+                    // 2. Set DWM border color to NONE.
+                    let border_color: u32 = 0xFFFFFFFE; // DWM_COLOR_NONE = 0xFFFFFFFE
+                    let hr_border = dwm_set_window_attribute(
+                        raw_hwnd,
+                        34, // DWMWA_BORDER_COLOR = 34
+                        &border_color as *const _ as *const c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                    if hr_border == 0 {
+                        eprintln!("[FromZero] ✓ Successfully disabled native DWM window border color");
+                    } else {
+                        eprintln!("[FromZero] DwmSetWindowAttribute failed to remove border color: hr = {}", hr_border);
+                    }
+                }
+            }
+            winapi::um::libloaderapi::FreeLibrary(handle);
+        }
+    }
+}
+

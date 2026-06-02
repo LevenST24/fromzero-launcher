@@ -4,7 +4,7 @@
 let appItems = [];
 let filteredItems = [];
 let selectedIndex = 0;
-let settings = { shortcut: "Alt+Space", theme: "dark", web_engines: {}, recent_apps: [] };
+let settings = { shortcut: "Alt+Space", theme: "dark", web_engines: {}, recent_apps: [], autostart: false };
 
 // Search debounce and query race condition tracking
 let lastSearchId = 0;
@@ -34,6 +34,7 @@ const settingsSave = document.getElementById("settings-save");
 const shortcutDisplay = document.getElementById("shortcut-display");
 const recordBtn = document.getElementById("record-btn");
 const themeSelect = document.getElementById("theme-select");
+const autostartToggle = document.getElementById("autostart-toggle");
 
 // System commands helper list
 const SYSTEM_COMMANDS = [
@@ -79,6 +80,13 @@ function ensureTauri() {
 }
 
 ensureTauri();
+
+function logDebug(msg) {
+  console.log(msg);
+  if (invoke) {
+    invoke("debug_log", { msg: String(msg) }).catch(() => {});
+  }
+}
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -156,12 +164,22 @@ window.addEventListener("DOMContentLoaded", async () => {
       searchInput.addEventListener("compositionend", () => {
         isComposing = false;
         clearTimeout(searchDebounceTimeout);
-        searchDebounceTimeout = setTimeout(handleSearch, 100);
+        logDebug("[Debug] compositionend: scheduling search, current timeout: " + searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(() => {
+          logDebug("[Debug] search timeout fired (compositionend)");
+          searchDebounceTimeout = null;
+          handleSearch();
+        }, 100);
       });
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
         clearTimeout(searchDebounceTimeout);
-        searchDebounceTimeout = setTimeout(handleSearch, 100);
+        logDebug("[Debug] input event: value = " + searchInput.value + ", scheduling search, current timeout: " + searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(() => {
+          logDebug("[Debug] search timeout fired (input)");
+          searchDebounceTimeout = null;
+          handleSearch();
+        }, 100);
       });
     }
 
@@ -173,6 +191,81 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (settingsSave) settingsSave.addEventListener("click", saveSettingsConfig);
 
     if (recordBtn) recordBtn.addEventListener("click", toggleRecordingShortcut);
+
+    // =============================================
+    // Specular Highlight — cursor-following light spot (Liquid Glass)
+    // NO refractive drift / NO wave effect
+    // =============================================
+    const container = document.getElementById("launcher-container");
+    if (container) {
+      // Spring state for specular highlight only
+      let targetMouseX = 0;
+      let targetMouseY = 0;
+      let isHovered = false;
+
+      // Specular Highlight Spring (snappy light reflection)
+      let shX = -999, shY = -999;
+      let shVx = 0, shVy = 0;
+      const shStiffness = 0.12;
+      const shDamping = 0.16;
+
+      function updateSprings() {
+        if (!document.getElementById("launcher-container")) return;
+
+        let targetShX = -999;
+        let targetShY = -999;
+
+        if (isHovered) {
+          targetShX = targetMouseX;
+          targetShY = targetMouseY;
+        }
+
+        // Update Specular Highlight Spring only
+        if (targetShX === -999) {
+          shX = -999;
+          shY = -999;
+          shVx = 0;
+          shVy = 0;
+        } else {
+          if (shX === -999) { shX = targetShX; shY = targetShY; }
+          const ax = (targetShX - shX) * shStiffness;
+          const ay = (targetShY - shY) * shStiffness;
+          shVx = (shVx + ax) * (1 - shDamping);
+          shVy = (shVy + ay) * (1 - shDamping);
+          shX += shVx;
+          shY += shVy;
+        }
+
+        // Render CSS coordinates for specular highlight
+        if (shX === -999) {
+          container.style.setProperty("--mx", `-999px`);
+          container.style.setProperty("--my", `-999px`);
+        } else {
+          container.style.setProperty("--mx", `${shX}px`);
+          container.style.setProperty("--my", `${shY}px`);
+        }
+
+        requestAnimationFrame(updateSprings);
+      }
+
+      // Start the animation loop
+      requestAnimationFrame(updateSprings);
+
+      container.addEventListener("mouseenter", () => {
+        isHovered = true;
+      });
+
+      container.addEventListener("mousemove", (e) => {
+        const rect = container.getBoundingClientRect();
+        targetMouseX = e.clientX - rect.left;
+        targetMouseY = e.clientY - rect.top;
+        isHovered = true;
+      });
+
+      container.addEventListener("mouseleave", () => {
+        isHovered = false;
+      });
+    }
 
     if (window.__TAURI__) {
       appWindow.listen("tauri://focus", () => {
@@ -486,6 +579,12 @@ async function handleGlobalKeys(e) {
   }
   if (e.key === "ArrowDown") {
     e.preventDefault();
+    if (searchDebounceTimeout) {
+      logDebug("[Debug] ArrowDown: clearing searchDebounceTimeout and running search immediately");
+      clearTimeout(searchDebounceTimeout);
+      searchDebounceTimeout = null;
+      await handleSearch();
+    }
     if (filteredItems.length > 0) {
       if (selectedIndex < filteredItems.length - 1) {
         selectedIndex++;
@@ -494,6 +593,12 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
+    if (searchDebounceTimeout) {
+      logDebug("[Debug] ArrowUp: clearing searchDebounceTimeout and running search immediately");
+      clearTimeout(searchDebounceTimeout);
+      searchDebounceTimeout = null;
+      await handleSearch();
+    }
     if (filteredItems.length > 0) {
       if (selectedIndex > 0) {
         selectedIndex--;
@@ -502,11 +607,15 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "Enter") {
     e.preventDefault();
-    if (searchDebounceTimeout) {
+    logDebug("[Debug] Enter keydown pressed. searchDebounceTimeout: " + searchDebounceTimeout + ", selectedIndex: " + selectedIndex + ", filteredItems length: " + filteredItems.length);
+    if (searchDebounceTimeout && selectedIndex === 0) {
+      logDebug("[Debug] Enter: clearing searchDebounceTimeout and running immediate search");
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
+      logDebug("[Debug] Enter: handleSearch finished. selectedIndex reset to: " + selectedIndex);
     }
+    logDebug("[Debug] Enter: launching item at selectedIndex: " + selectedIndex + ", item: " + JSON.stringify(filteredItems[selectedIndex]));
     if (filteredItems.length > 0 && filteredItems[selectedIndex]) {
       executeItemAction(filteredItems[selectedIndex]);
     }
@@ -528,6 +637,7 @@ function openSettings() {
   if (settingsOverlay) settingsOverlay.classList.add("active");
   if (themeSelect) themeSelect.value = settings.theme || "dark";
   if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Alt+Space";
+  if (autostartToggle) autostartToggle.checked = settings.autostart || false;
 }
 
 function closeSettings() {
@@ -545,6 +655,7 @@ async function saveSettingsConfig() {
     ensureTauri();
     if (themeSelect) settings.theme = themeSelect.value;
     if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
+    if (autostartToggle) settings.autostart = autostartToggle.checked;
     applyTheme(settings.theme);
     await invoke("update_settings", { settings });
     closeSettings();

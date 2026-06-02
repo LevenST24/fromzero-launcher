@@ -9,15 +9,15 @@
 
 :root {
   /* ── Glass Surface Colors ──
-     Key insight: the container bg must be VERY transparent
-     so native Acrylic blur shows through clearly. */
-  --glass-bg: rgba(20, 20, 28, 0.55);
-  --glass-surface: rgba(255, 255, 255, 0.05);
-  --glass-hover: rgba(255, 255, 255, 0.08);
-  --glass-selected: rgba(108, 143, 255, 0.16);
-  --glass-card: rgba(255, 255, 255, 0.06);
-  --glass-card-hover: rgba(255, 255, 255, 0.12);
-  --glass-input: rgba(0, 0, 0, 0.20);
+     TRUE LIQUID GLASS: bg opacity must be very low so SVG
+     refraction filter can show through. */
+  --glass-bg: rgba(13, 15, 28, 0.25);
+  --glass-surface: rgba(255, 255, 255, 0.06);
+  --glass-hover: rgba(255, 255, 255, 0.10);
+  --glass-selected: rgba(108, 143, 255, 0.20);
+  --glass-card: rgba(255, 255, 255, 0.04);
+  --glass-card-hover: rgba(255, 255, 255, 0.08);
+  --glass-input: rgba(0, 0, 0, 0.12);
 
   /* ── Accent ── */
   --accent: #6C8FFF;
@@ -36,7 +36,7 @@
   --border-focus: rgba(108, 143, 255, 0.50);
 
   /* ── Shadows ── */
-  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.40);
+  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 20px rgba(255, 255, 255, 0.02);
   --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.12);
 
   /* ── Typography ── */
@@ -50,21 +50,21 @@
 
 /* ── Light Theme ── */
 [data-theme="light"] {
-  --glass-bg: rgba(255, 255, 255, 0.70);
-  --glass-surface: rgba(255, 255, 255, 0.40);
+  --glass-bg: rgba(255, 255, 255, 0.20);
+  --glass-surface: rgba(255, 255, 255, 0.50);
   --glass-hover: rgba(0, 0, 0, 0.05);
-  --glass-selected: rgba(74, 114, 255, 0.12);
-  --glass-card: rgba(255, 255, 255, 0.50);
-  --glass-card-hover: rgba(255, 255, 255, 0.65);
-  --glass-input: rgba(0, 0, 0, 0.05);
+  --glass-selected: rgba(74, 114, 255, 0.15);
+  --glass-card: rgba(255, 255, 255, 0.35);
+  --glass-card-hover: rgba(255, 255, 255, 0.50);
+  --glass-input: rgba(0, 0, 0, 0.04);
   --accent: #4A72FF;
   --accent-glow: rgba(74, 114, 255, 0.20);
   --text-primary: rgba(0, 0, 0, 0.90);
   --text-secondary: rgba(0, 0, 0, 0.72);
   --text-dim: rgba(0, 0, 0, 0.45);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-light: rgba(0, 0, 0, 0.12);
-  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.16);
+  --border: rgba(0, 0, 0, 0.06);
+  --border-light: rgba(0, 0, 0, 0.10);
+  --shadow-window: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
 /* ── Reset ── */
@@ -91,12 +91,74 @@ body {
 }
 
 /* ============================================================
-   MAIN GLASS CONTAINER
+   LIQUID GLASS — AMBIENT COLOR LAYER
+   Subtle static colored orbs provide depth and warmth.
+   NO animation, NO motion — purely ambient.
+   ============================================================ */
+.liquid-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+  
+  /* Apply the liquid glass SVG refraction filter to the ambient color layer.
+     This creates organic glass-like distortion on the colored orbs.
+     Using regular filter (not backdrop-filter) since Chromium doesn't
+     support backdrop-filter: url() for SVG filter references. */
+  filter: url(#liquid-glass);
+  -webkit-filter: url(#liquid-glass);
+}
+
+.orb {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(110px);
+  opacity: 0.18;
+  /* completely static — zero animation */
+}
+
+.orb-1 {
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.6) 0%, transparent 70%);
+  left: -100px;
+  top: -100px;
+}
+
+.orb-2 {
+  background: radial-gradient(circle, rgba(244, 63, 94, 0.5) 0%, transparent 70%);
+  right: -100px;
+  bottom: -100px;
+}
+
+.orb-3 {
+  background: radial-gradient(circle, rgba(20, 184, 166, 0.35) 0%, transparent 70%);
+  right: -60px;
+  top: -60px;
+}
+
+.orb-4 {
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.45) 0%, transparent 70%);
+  left: -60px;
+  bottom: -60px;
+}
+
+[data-theme="light"] .orb { opacity: 0.12; }
+[data-theme="light"] .orb-1 { background: radial-gradient(circle, rgba(165, 180, 252, 0.4) 0%, transparent 70%); }
+[data-theme="light"] .orb-2 { background: radial-gradient(circle, rgba(251, 113, 133, 0.3) 0%, transparent 70%); }
+[data-theme="light"] .orb-3 { background: radial-gradient(circle, rgba(153, 246, 228, 0.3) 0%, transparent 70%); }
+[data-theme="light"] .orb-4 { background: radial-gradient(circle, rgba(196, 181, 253, 0.3) 0%, transparent 70%); }
+
+/* ============================================================
+   MAIN GLASS CONTAINER — TRUE LIQUID GLASS
    ============================================================
-   The REAL frosted glass effect comes from 3 layers:
-   1. Native Acrylic (Rust side) — blurs desktop behind window
-   2. This container's backdrop-filter — CSS blur fallback/enhancement  
-   3. Very low-opacity background tint — just enough for text contrast
+   Uses SVG filter (backdrop-filter: url(#liquid-glass)) for:
+   - Real refraction through fractal noise displacement
+   - Specular lighting highlights on glass surface
+   - Deep frosted blur with organic warping
+   NO grey borders. Nearly invisible container edge.
    ============================================================ */
 .launcher-container {
   width: 620px;
@@ -105,24 +167,101 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 16px;
+  background: transparent;
 
-  /* THE frosted glass effect */
-  background: var(--glass-bg);
-  backdrop-filter: blur(40px) saturate(200%);
-  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  /* Ultra-subtle glass edge — nearly invisible */
+  border: 1px solid rgba(255, 255, 255, 0.12);
 
-  /* Glass borders — brighter top edge simulates light refraction */
-  border: 1px solid var(--border-light);
-  border-top: 1px solid rgba(255, 255, 255, 0.25);
-
-  /* Depth */
+  /* Beveled glass depth via inset shadows */
   box-shadow:
-    var(--shadow-window),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.05);
+    0 8px 40px rgba(0, 0, 0, 0.25),
+    0 0 0 0.5px rgba(255, 255, 255, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 
   animation: glassIn 0.28s var(--ease-smooth);
+}
+
+/* ── FROSTED GLASS LAYER ──
+   Standard CSS backdrop-filter blur for frosted glass effect.
+   The SVG liquid refraction is on .liquid-bg below; this layer
+   adds the frosted/milky quality and slight saturation boost. */
+.glass-blur-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  
+  /* Semi-transparent tint */
+  background: var(--glass-bg);
+  
+  /* Standard frosted glass blur */
+  backdrop-filter: blur(24px) saturate(180%) brightness(105%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%) brightness(105%);
+}
+
+/* Cursor-following specular highlight for light-catching effect */
+.specular-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: inherit;
+  
+  background: radial-gradient(
+    circle 200px at var(--mx, -999px) var(--my, -999px),
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0) 75%
+  );
+  mix-blend-mode: overlay;
+  transition: opacity 0.5s ease;
+}
+
+/* Subtle sweeping light across glass surface */
+.launcher-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0) 30%,
+    rgba(255,255,255,0.04) 50%,
+    rgba(255,255,255,0) 70%
+  );
+  background-size: 200% 200%;
+  animation: glassReflection 20s infinite linear;
+  pointer-events: none;
+  z-index: 3;
+  border-radius: inherit;
+}
+
+[data-theme="light"] .launcher-container {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.10),
+    0 0 0 0.5px rgba(255, 255, 255, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.50),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .glass-blur-layer {
+  backdrop-filter: blur(24px) saturate(160%) brightness(102%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%) brightness(102%);
+}
+
+[data-theme="light"] .specular-highlight {
+  background: radial-gradient(
+    circle 200px at var(--mx, -999px) var(--my, -999px),
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0) 75%
+  );
+}
+
+@keyframes glassReflection {
+  0% { background-position: -200% -200%; }
+  100% { background-position: 200% 200%; }
 }
 
 @keyframes glassIn {
@@ -142,11 +281,48 @@ body {
 .search-bar {
   display: flex;
   align-items: center;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border);
+  margin: 16px 16px 8px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 24px;
   gap: 12px;
   position: relative;
   z-index: 5;
+  
+  /* Frosted glass inner element blur */
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  
+  box-shadow: 
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.20);
+    
+  transition: all 0.28s var(--ease-smooth);
+}
+
+.search-bar:focus-within {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(108, 143, 255, 0.40);
+  box-shadow: 
+    0 4px 20px rgba(108, 143, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.30);
+}
+
+[data-theme="light"] .search-bar {
+  background: rgba(255, 255, 255, 0.40);
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  box-shadow: 
+    0 4px 12px rgba(0, 0, 0, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.50);
+}
+
+[data-theme="light"] .search-bar:focus-within {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(74, 114, 255, 0.40);
+  box-shadow: 
+    0 4px 20px rgba(74, 114, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.60);
 }
 
 .search-icon {
@@ -214,7 +390,7 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 10px;
+  padding: 0 16px 12px; /* Perfect floating margins */
   z-index: 5;
   position: relative;
 }
@@ -222,18 +398,32 @@ body {
 .results-area::-webkit-scrollbar { width: 4px; }
 .results-area::-webkit-scrollbar-track { background: transparent; }
 .results-area::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.10);
   border-radius: 10px;
 }
 .results-area::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.20);
 }
 
 /* ── Welcome / Recent ── */
 .welcome-screen {
   display: flex;
   flex-direction: column;
-  padding: 14px 6px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.08),
+    0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .welcome-screen {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.40),
+    0 4px 16px rgba(0, 0, 0, 0.04);
 }
 
 .welcome-title {
@@ -244,6 +434,9 @@ body {
   color: var(--text-dim);
   margin-bottom: 12px;
   padding-left: 4px;
+  text-shadow: 
+    0.4px 0 0.2px rgba(255, 60, 60, 0.12), 
+    -0.4px 0 0.2px rgba(60, 120, 255, 0.12);
 }
 
 /* ── Frosted Glass Cards ── */
@@ -263,21 +456,34 @@ body {
   position: relative;
   overflow: hidden;
 
-  /* Glass card effect */
-  background: var(--glass-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
+  /* Glass card effect with white tint */
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 10px;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12);
 
   transition: all 0.22s var(--ease-smooth);
 }
 
+[data-theme="light"] .recent-card {
+  background: rgba(255, 255, 255, 0.30);
+  border-color: rgba(255, 255, 255, 0.20);
+}
+
 .recent-card:hover {
-  background: var(--glass-card-hover);
-  border-color: var(--border-light);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-card), 0 0 12px rgba(108, 143, 255, 0.06);
+  box-shadow: 
+    0 6px 20px rgba(108, 143, 255, 0.15), 
+    inset 0 1px 1px rgba(255, 255, 255, 0.20);
+}
+
+[data-theme="light"] .recent-card:hover {
+  background: rgba(255, 255, 255, 0.50);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .recent-card:active {
@@ -305,17 +511,60 @@ body {
 /* ============================================================
    RESULT LIST ITEMS
    ============================================================ */
+/* Results list parent window overlay wrapper */
+#results-list {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 14px;
+  padding: 8px;
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.08),
+    0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] #results-list {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 
+    inset 0 1px 1px rgba(255, 255, 255, 0.40),
+    0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
 .result-item {
   display: flex;
   align-items: center;
-  padding: 9px 12px;
+  padding: 10px 14px;
   border-radius: 10px;
   cursor: pointer;
-  margin-bottom: 2px;
-  border: 1px solid transparent;
+  margin-bottom: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
   position: relative;
   transition: all 0.18s var(--ease-smooth);
   animation: itemSlide 0.2s var(--ease-smooth) both;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .result-item {
+  background: rgba(255, 255, 255, 0.20);
+  border-color: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .result-item:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.result-item.selected {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(108, 143, 255, 0.35);
+  box-shadow: 
+    0 4px 16px rgba(108, 143, 255, 0.15),
+    inset 0 1px 1px rgba(255, 255, 255, 0.20);
+}
+
+[data-theme="light"] .result-item.selected {
+  background: rgba(74, 114, 255, 0.12);
+  border-color: rgba(74, 114, 255, 0.25);
 }
 
 .result-item:nth-child(1) { animation-delay: 0ms; }
@@ -330,15 +579,6 @@ body {
 @keyframes itemSlide {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-.result-item:hover {
-  background: var(--glass-hover);
-}
-
-.result-item.selected {
-  background: var(--glass-selected);
-  border-color: var(--border-focus);
 }
 
 /* Accent indicator on selected item */
@@ -399,6 +639,9 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 
+    0.4px 0 0.2px rgba(255, 60, 60, 0.15), 
+    -0.4px 0 0.2px rgba(60, 120, 255, 0.15);
 }
 
 .result-subtitle {
@@ -447,13 +690,19 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 7px 14px;
-  border-top: 1px solid var(--border);
+  padding: 8px 18px;
+  background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 11px;
   color: var(--text-dim);
   flex-shrink: 0;
   z-index: 5;
   position: relative;
+}
+
+[data-theme="light"] .footer {
+  background: rgba(255, 255, 255, 0.05);
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .footer-shortcuts {
@@ -502,9 +751,13 @@ body {
   background: rgba(28, 28, 36, 0.88);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-light);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-top: 1px solid rgba(255, 255, 255, 0.45);
   border-radius: 14px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  box-shadow: 
+    0 24px 64px rgba(0, 0, 0, 0.50),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08);
   padding: 22px;
   display: flex;
   flex-direction: column;
@@ -512,7 +765,13 @@ body {
 }
 
 [data-theme="light"] .settings-modal {
-  background: rgba(250, 250, 254, 0.90);
+  background: rgba(250, 250, 254, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.40);
+  border-top: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 
+    0 24px 64px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.60),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.04);
 }
 
 @keyframes modalIn {
@@ -665,3 +924,69 @@ body {
   transform: translateY(-1px);
   box-shadow: 0 0 16px var(--accent-glow);
 }
+
+/* ============================================================
+   PREMIUM FLUENT SWITCH TOGGLE
+   ============================================================ */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.12);
+  transition: 0.28s var(--ease-smooth);
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .slider {
+  background-color: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.05);
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #ffffff;
+  transition: 0.28s var(--ease-smooth);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="light"] .slider:before {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+input:checked + .slider {
+  background-color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="light"] input:checked + .slider {
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+input:checked + .slider:before {
+  transform: translate3d(20px, 0, 0);
+}
+

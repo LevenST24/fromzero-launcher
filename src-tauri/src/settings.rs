@@ -15,6 +15,8 @@ pub struct Settings {
     pub web_engines: HashMap<String, String>,
     #[serde(default)]
     pub recent_apps: Vec<String>,
+    #[serde(default = "default_autostart")]
+    pub autostart: bool,
 }
 
 fn default_shortcut() -> String {
@@ -23,6 +25,10 @@ fn default_shortcut() -> String {
 
 fn default_theme() -> String {
     "dark".to_string()
+}
+
+fn default_autostart() -> bool {
+    false
 }
 
 fn default_web_engines() -> HashMap<String, String> {
@@ -41,6 +47,7 @@ impl Default for Settings {
             theme: default_theme(),
             web_engines: default_web_engines(),
             recent_apps: Vec::new(),
+            autostart: default_autostart(),
         }
     }
 }
@@ -102,4 +109,25 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
     } else {
         Err("Failed to resolve settings path".to_string())
     }
+}
+
+pub fn apply_autostart_setting(app_handle: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autostart_manager = app_handle.autolaunch();
+    
+    if enabled {
+        autostart_manager
+            .enable()
+            .map_err(|e| format!("Failed to enable autostart: {}", e))?;
+    } else {
+        // If the key is already missing (e.g. manually deleted or not yet registered),
+        // disable returns os error 2. We robustly ignore this expected error.
+        if let Err(e) = autostart_manager.disable() {
+            let err_msg = e.to_string();
+            if !err_msg.contains("os error 2") && !err_msg.contains("找不到指定的文件") {
+                return Err(format!("Failed to disable autostart: {}", e));
+            }
+        }
+    }
+    Ok(())
 }

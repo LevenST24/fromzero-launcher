@@ -5,11 +5,77 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FromZero Launcher</title>
     <link rel="stylesheet" href="styles.css" />
-    <script type="module" src="/main.js" defer></script>
+    <script type="module" src="/main.js?v=1" defer></script>
   </head>
 
   <body>
+    <!-- ============================================================
+         TRUE LIQUID GLASS SVG FILTER SYSTEM
+         Implements Apple-style liquid glass refraction using:
+         1. feTurbulence → organic fractal noise map
+         2. feGaussianBlur → smooths noise into broad glass-like warps
+         3. feDisplacementMap → refracts backdrop through noise map
+         4. feSpecularLighting → creates realistic light catch on glass surface
+         5. feComposite → blends specular highlights with refracted image
+         ============================================================ -->
+    <svg class="svg-filters" style="position: absolute; width: 0; height: 0; pointer-events: none;" aria-hidden="true">
+      <defs>
+        <!-- Primary liquid glass refraction + specular highlight filter -->
+        <filter id="liquid-glass" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+          <!-- Step 1: Generate organic fractal noise for glass surface imperfections -->
+          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.018" numOctaves="3" seed="8" result="noise" />
+          
+          <!-- Step 2: Smooth the noise to create broad, gentle glass surface undulations -->
+          <feGaussianBlur in="noise" stdDeviation="6" result="smoothNoise" />
+          
+          <!-- Step 3: Displace the source through the smoothed noise → liquid refraction effect -->
+          <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="18" xChannelSelector="R" yChannelSelector="G" result="refracted" />
+          
+          <!-- Step 4: Apply gaussian blur for frosted glass depth -->
+          <feGaussianBlur in="refracted" stdDeviation="12" result="blurredRefracted" />
+          
+          <!-- Step 5: Specular lighting on the noise creates light-catching glass surface highlights -->
+          <feSpecularLighting in="smoothNoise" surfaceScale="2" specularConstant="0.6" specularExponent="25" lighting-color="#ffffff" result="specular">
+            <fePointLight x="200" y="80" z="220" />
+          </feSpecularLighting>
+          
+          <!-- Step 6: Clip specular to source alpha -->
+          <feComposite in="specular" in2="SourceGraphic" operator="in" result="clippedSpecular" />
+          
+          <!-- Step 7: Blend the specular highlights over the blurred refracted backdrop -->
+          <feBlend in="blurredRefracted" in2="clippedSpecular" mode="screen" />
+        </filter>
+
+        <!-- Lighter version for inner elements (search bar, cards) -->
+        <filter id="liquid-glass-light" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.015 0.02" numOctaves="2" seed="12" result="noise" />
+          <feGaussianBlur in="noise" stdDeviation="4" result="smoothNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="8" xChannelSelector="R" yChannelSelector="G" result="refracted" />
+          <feGaussianBlur in="refracted" stdDeviation="8" result="blurred" />
+          <feSpecularLighting in="smoothNoise" surfaceScale="1.5" specularConstant="0.4" specularExponent="30" lighting-color="#ffffff" result="specular">
+            <fePointLight x="150" y="60" z="180" />
+          </feSpecularLighting>
+          <feComposite in="specular" in2="SourceGraphic" operator="in" result="clippedSpecular" />
+          <feBlend in="blurred" in2="clippedSpecular" mode="screen" />
+        </filter>
+      </defs>
+    </svg>
+
     <div class="launcher-container" id="launcher-container">
+      <!-- Subtle ambient color layer (static, no animation) -->
+      <div class="liquid-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="orb orb-4"></div>
+      </div>
+
+      <!-- TRUE Liquid Glass Layer — applies SVG refraction filter as backdrop-filter -->
+      <div class="glass-blur-layer"></div>
+
+      <!-- Specular highlight that follows cursor for light-catching effect -->
+      <div class="specular-highlight"></div>
+
       <!-- 搜索输入区域 -->
       <header class="search-bar">
         <span class="search-icon" id="search-indicator">🔍</span>
@@ -77,6 +143,15 @@
               <option value="dark">极简暗黑 (Dark)</option>
               <option value="light">清透高雅 (Light)</option>
             </select>
+          </div>
+
+          <!-- 开机自启动 -->
+          <div class="settings-group" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+            <label class="settings-label" style="margin-bottom: 0; text-transform: uppercase; letter-spacing: 0.5px;">开机自启动</label>
+            <label class="switch">
+              <input type="checkbox" id="autostart-toggle" />
+              <span class="slider"></span>
+            </label>
           </div>
 
           <!-- 网页搜索配置 -->

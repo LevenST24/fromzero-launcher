@@ -17,6 +17,14 @@ pub fn get_settings(app_handle: AppHandle, state: State<'_, AppState>) -> Result
 #[tauri::command]
 pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
+    
+    // Compare old and new autostart setting to prevent writing registry on every launch
+    let old_settings = settings::load_settings(&app_handle);
+    if old_settings.autostart != settings.autostart {
+        eprintln!("[FromZero] Autostart setting changed: {} -> {}", old_settings.autostart, settings.autostart);
+        let _ = settings::apply_autostart_setting(&app_handle, settings.autostart);
+    }
+    
     settings::save_settings(&app_handle, &settings)?;
     
     // Dynamically register the new global hotkey
@@ -198,4 +206,9 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
     }).map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn debug_log(msg: String) {
+    println!("[Frontend-Debug] {}", msg);
 }
