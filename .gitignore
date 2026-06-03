@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local audit source code
+ALL_SOURCE_CODE.md
