@@ -150,7 +150,7 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
 pub fn apply_autostart_setting(app_handle: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let autostart_manager = app_handle.autolaunch();
-    
+
     if enabled {
         autostart_manager
             .enable()
@@ -166,4 +166,51 @@ pub fn apply_autostart_setting(app_handle: &tauri::AppHandle, enabled: bool) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_default_values() {
+        let settings = Settings::default();
+        assert_eq!(settings.shortcut, "Alt+Space");
+        assert_eq!(settings.theme, "dark");
+        assert!(!settings.autostart);
+        assert!(settings.recent_apps.is_empty());
+        assert!(settings.web_engines.contains_key("g"));
+        assert_eq!(settings.web_engines["g"], "https://google.com/search?q={}");
+    }
+
+    #[test]
+    fn test_settings_serialization_roundtrip() {
+        let settings = Settings::default();
+        let json = serde_json::to_string(&settings).unwrap();
+        let deserialized: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(settings.shortcut, deserialized.shortcut);
+        assert_eq!(settings.theme, deserialized.theme);
+        assert_eq!(settings.autostart, deserialized.autostart);
+        assert_eq!(settings.web_engines, deserialized.web_engines);
+    }
+
+    #[test]
+    fn test_settings_deserialization_missing_fields() {
+        // When fields are missing, serde defaults should fill them in
+        let json = "{}";
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.shortcut, "Alt+Space");
+        assert_eq!(settings.theme, "dark");
+        assert!(!settings.autostart);
+    }
+
+    #[test]
+    fn test_settings_deserialization_partial() {
+        let json = "{\"shortcut\": \"Ctrl+Space\", \"theme\": \"light\"}";
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.shortcut, "Ctrl+Space");
+        assert_eq!(settings.theme, "light");
+        assert!(!settings.autostart);
+        assert!(settings.web_engines.contains_key("g")); // defaults filled in
+    }
 }

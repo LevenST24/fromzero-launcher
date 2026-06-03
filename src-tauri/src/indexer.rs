@@ -71,7 +71,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     path = $_.FullName;
                     target = if ([string]::IsNullOrEmpty($target)) { $_.FullName } else { $target }
                 }
-            } catch {}
+            } catch { Write-Warning "Failed to resolve shortcut: $($_.Exception.Message)" }
         };
         if ($results) {
             $results | ConvertTo-Json -Compress
@@ -229,7 +229,7 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                     "-ExecutionPolicy", "Bypass",
                     "-WindowStyle", "Hidden",
                     "-Command",
-                    "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $items = Get-Content $env:TEMP_JSON_PATH -Raw -Encoding UTF8 | ConvertFrom-Json; foreach ($item in $items) { try { if ([System.IO.File]::Exists($item.target)) { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($item.target); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); Write-Output $item.path; } } catch {} }"
+                    "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $items = Get-Content $env:TEMP_JSON_PATH -Raw -Encoding UTF8 | ConvertFrom-Json; foreach ($item in $items) { try { if ([System.IO.File]::Exists($item.target)) { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($item.target); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); Write-Output $item.path; } } catch { Write-Warning \"Icon extraction failed for $($item.target): $($_.Exception.Message)\" } }"
                 ]);
                 cmd.env("TEMP_JSON_PATH", &temp_json_path);
 
@@ -292,5 +292,59 @@ fn run_command_with_timeout(
                 "Command timed out or channel disconnected",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_pinyin_chinese() {
+        let (initials, full) = get_pinyin("微信");
+        assert_eq!(initials, "wx");
+        assert_eq!(full, "weixin");
+    }
+
+    #[test]
+    fn test_get_pinyin_english() {
+        let (initials, full) = get_pinyin("Chrome");
+        assert_eq!(initials, "chrome");
+        assert_eq!(full, "chrome");
+    }
+
+    #[test]
+    fn test_get_pinyin_mixed() {
+        let (initials, full) = get_pinyin("微信WeChat");
+        assert_eq!(initials, "wxwechat");
+        assert_eq!(full, "weixinwechat");
+    }
+
+    #[test]
+    fn test_get_pinyin_empty() {
+        let (initials, full) = get_pinyin("");
+        assert_eq!(initials, "");
+        assert_eq!(full, "");
+    }
+
+    #[test]
+    fn test_get_path_hash_deterministic() {
+        let hash1 = get_path_hash("C:\\Program Files\\App\\app.exe");
+        let hash2 = get_path_hash("C:\\Program Files\\App\\app.exe");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_get_path_hash_different_inputs() {
+        let hash1 = get_path_hash("C:\\App1\\app.exe");
+        let hash2 = get_path_hash("C:\\App2\\app.exe");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_get_path_hash_empty() {
+        let hash = get_path_hash("");
+        // FNV offset basis
+        assert_eq!(hash, 0xcbf29ce484222325);
     }
 }

@@ -1,10 +1,46 @@
 // === FromZero Launcher — Main Frontend Logic ===
 
+// Safe extraction of Tauri APIs with fallback mocks for non-Tauri browser environments/test runner
+let invoke, getCurrentWindow, listen, convertFileSrc;
+
+if (window.__TAURI__) {
+  invoke = window.__TAURI__.core.invoke;
+  getCurrentWindow = window.__TAURI__.window.getCurrentWindow;
+  listen = window.__TAURI__.event ? window.__TAURI__.event.listen : getCurrentWindow().listen;
+  convertFileSrc = window.__TAURI__.core.convertFileSrc;
+  
+  // Safe cleanup: delete the global window.__TAURI__ object to protect against XSS command injections
+  delete window.__TAURI__;
+} else {
+  // Setup standard fallback mocks for local web development & test runner compatibility
+  console.warn("[FromZero] window.__TAURI__ not found, using development mocks");
+  invoke = async (cmd, args) => {
+    console.log(`[Mock Invoke] ${cmd}`, args);
+    if (cmd === "get_settings") {
+      return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [], autostart: false };
+    }
+    if (cmd === "scan_apps") return [];
+    if (cmd === "search_apps") return [];
+    return {};
+  };
+  getCurrentWindow = () => ({
+    hide: async () => console.log("[Mock Window] hide"),
+    show: async () => console.log("[Mock Window] show"),
+    setFocus: async () => console.log("[Mock Window] setFocus"),
+    listen: (event, callback) => {
+      console.log(`[Mock Window] listen for ${event}`);
+      return () => {};
+    }
+  });
+  listen = (event, callback) => getCurrentWindow().listen(event, callback);
+  convertFileSrc = (path) => `https://asset.localhost/${encodeURIComponent(path)}`;
+}
+
 // App state variables
 let appItems = [];
 let filteredItems = [];
 let selectedIndex = 0;
-let settings = { shortcut: "Alt+Space", theme: "dark", web_engines: {}, recent_apps: [], autostart: false };
+let settings = {};
 
 // Search debounce and query race condition tracking
 let lastSearchId = 0;
@@ -36,6 +72,8 @@ const recordBtn = document.getElementById("record-btn");
 const themeSelect = document.getElementById("theme-select");
 const autostartToggle = document.getElementById("autostart-toggle");
 
+const appWindow = getCurrentWindow();
+
 // System commands helper list
 const SYSTEM_COMMANDS = [
   { key: "lock", name: "锁定屏幕 (Lock Screen)", desc: "锁定当前的 Windows 会话", badge: "系统" },
@@ -44,51 +82,10 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-// =============================================
-// Tauri Core APIs Wrapper with Safety Guards
-// =============================================
-let invoke = null;
-let appWindow = null;
-let isMock = false;
-
 // Animation loop state
 let springAnimationId = null;
 let startSprings = null;
 let stopSprings = null;
-
-function ensureTauri() {
-  if (window.__TAURI__) {
-    if (isMock || !invoke || !appWindow) {
-      invoke = window.__TAURI__.core.invoke;
-      appWindow = window.__TAURI__.window.getCurrentWindow();
-      isMock = false;
-    }
-  } else if (!invoke || !appWindow) {
-    console.warn("[FromZero] __TAURI__ not found, setting up fallback mocks");
-    isMock = true;
-    invoke = async (cmd, args) => {
-      console.log(`[Mock Invoke] ${cmd}`, args);
-      if (cmd === "get_settings") {
-        return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [], autostart: false };
-      }
-      if (cmd === "scan_apps") return [];
-      if (cmd === "search_apps") return [];
-      return {};
-    };
-    appWindow = {
-      hide: async () => console.log("[Mock AppWindow] hide"),
-      show: async () => console.log("[Mock AppWindow] show"),
-      setFocus: async () => console.log("[Mock AppWindow] setFocus"),
-      listen: (event, callback) => {
-        console.log(`[Mock AppWindow] listen for ${event}`);
-        return () => {};
-      }
-    };
-  }
-}
-
-ensureTauri();
-
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -110,7 +107,7 @@ window.addEventListener("blur", () => {
   if (stopSprings) stopSprings();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.add("blurred");
-  
+
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
     return;
@@ -121,7 +118,6 @@ window.addEventListener("blur", () => {
   setTimeout(async () => {
     if (!document.hasFocus()) {
       try {
-        ensureTauri();
         await appWindow.hide();
       } catch (e) {
         console.warn("[FromZero] Failed to hide window:", e);
@@ -131,21 +127,39 @@ window.addEventListener("blur", () => {
 });
 
 // =============================================
+// Helper: generate engine display name from prefix
+// =============================================
+function getEngineName(prefix) {
+  const knownNames = { g: "Google", b: "百度", bi: "Bing", gh: "GitHub" };
+  if (knownNames[prefix]) return knownNames[prefix];
+  // Fallback: capitalize first letter of prefix
+  return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+}
+
+// =============================================
+// Helper: clear DOM element children safely (no innerHTML)
+// =============================================
+function clearChildren(el) {
+  while (el.firstChild) {
+    el.removeChild(el.firstChild);
+  }
+}
+
+// =============================================
 // Initialize application
 // =============================================
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     console.log("[FromZero] Initializing...");
     lastShowTime = Date.now();
-    ensureTauri();
 
     try {
-      const loaded = await invoke("get_settings");
-      settings = { ...settings, ...loaded };
+      settings = await invoke("get_settings");
       settings.recent_apps = settings.recent_apps || [];
       settings.web_engines = settings.web_engines || {};
     } catch (e) {
-      console.error("[FromZero] Failed to load settings, using default:", e);
+      console.error("[FromZero] Failed to load settings, using empty defaults:", e);
+      settings = {};
     }
 
     applyTheme(settings.theme);
@@ -245,7 +259,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           if (shX === -999) { shX = targetShX; shY = targetShY; }
           const dx = targetShX - shX;
           const dy = targetShY - shY;
-          
+
           // Only animate if the spring has not settled
           if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05 || Math.abs(shVx) > 0.05 || Math.abs(shVy) > 0.05) {
             const ax = dx * shStiffness;
@@ -317,51 +331,48 @@ window.addEventListener("DOMContentLoaded", async () => {
       });
     }
 
-    if (window.__TAURI__) {
-      appWindow.listen("tauri://focus", () => {
-        lastShowTime = Date.now();
-        if (searchInput) searchInput.focus();
-        if (startSprings) startSprings();
-        const container = document.getElementById("launcher-container");
-        if (container) container.classList.remove("blurred");
-      });
+    appWindow.listen("tauri://focus", () => {
+      lastShowTime = Date.now();
+      if (searchInput) searchInput.focus();
+      if (startSprings) startSprings();
+      const container = document.getElementById("launcher-container");
+      if (container) container.classList.remove("blurred");
+    });
 
-      appWindow.listen("tauri://blur", () => {
-        if (stopSprings) stopSprings();
-        const container = document.getElementById("launcher-container");
-        if (container) container.classList.add("blurred");
-      });
+    appWindow.listen("tauri://blur", () => {
+      if (stopSprings) stopSprings();
+      const container = document.getElementById("launcher-container");
+      if (container) container.classList.add("blurred");
+    });
 
-      if (window.__TAURI__.event?.listen) {
-        window.__TAURI__.event.listen("icon-ready", (event) => {
-          const appPath = event.payload;
-          const recentCard = Array.from(document.querySelectorAll(".recent-card"))
-            .find(card => card.getAttribute("data-app-path") === appPath);
+    listen("icon-ready", (event) => {
+      const appPath = event.payload;
+      const recentCard = Array.from(document.querySelectorAll(".recent-card"))
+        .find(card => card.getAttribute("data-app-path") === appPath);
+      const app = appItems.find(a => a.path === appPath);
+      if (recentCard && app) {
+        const existingIcon = recentCard.querySelector(".recent-icon");
+        if (existingIcon) {
+          const newIcon = createIconElement(app.icon_path, "recent-icon");
+          recentCard.replaceChild(newIcon, existingIcon);
+        }
+      }
+      const resultIcons = document.querySelectorAll(".result-icon");
+      resultIcons.forEach((el) => {
+        if (el.getAttribute("data-app-path") === appPath) {
           const app = appItems.find(a => a.path === appPath);
-          if (recentCard && app) {
-            const existingIcon = recentCard.querySelector(".recent-icon");
-            if (existingIcon) {
-              const newIcon = createIconElement(app.icon_path, "recent-icon");
-              recentCard.replaceChild(newIcon, existingIcon);
+          if (app && app.icon_path) {
+            const newIcon = createIconElement(app.icon_path, "result-icon");
+            newIcon.setAttribute("data-app-path", appPath);
+            newIcon.setAttribute("data-icon-path", app.icon_path);
+            if (el.parentElement) {
+              el.parentElement.replaceChild(newIcon, el);
             }
           }
-          const resultIcons = document.querySelectorAll(".result-icon");
-          resultIcons.forEach((el) => {
-            if (el.getAttribute("data-app-path") === appPath) {
-              const app = appItems.find(a => a.path === appPath);
-              if (app && app.icon_path) {
-                const newIcon = createIconElement(app.icon_path, "result-icon");
-                newIcon.setAttribute("data-app-path", appPath);
-                newIcon.setAttribute("data-icon-path", app.icon_path);
-                if (el.parentElement) {
-                  el.parentElement.replaceChild(newIcon, el);
-                }
-              }
-            }
-          });
-        });
-      }
-    }
+        }
+      });
+    });
+
     console.log("[FromZero] ✓ Frontend initialization complete");
   } catch (error) {
     console.error("[FromZero] Initialization error:", error);
@@ -371,14 +382,17 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 function renderRecentApps() {
   if (!recentGrid) return;
-  recentGrid.innerHTML = "";
+  clearChildren(recentGrid);
   const recentApps = (settings.recent_apps || [])
     .map(path => appItems.find(app => app.path === path))
     .filter(Boolean)
     .slice(0, 8);
   const displayApps = recentApps.length > 0 ? recentApps : appItems.slice(0, 8);
   if (displayApps.length === 0) {
-    recentGrid.innerHTML = `<div style="grid-column: span 4; color: var(--text-dim); text-align: center; padding: 20px;">无可用应用</div>`;
+    const emptyDiv = document.createElement("div");
+    emptyDiv.className = "recent-empty";
+    emptyDiv.textContent = "无可用应用";
+    recentGrid.appendChild(emptyDiv);
     return;
   }
   displayApps.forEach(app => {
@@ -423,12 +437,7 @@ function createIconElement(iconPath, cssClass) {
     replaceWithFallbackEmoji(img, cssClass);
   };
   try {
-    ensureTauri();
-    if (window.__TAURI__?.core?.convertFileSrc) {
-      img.src = window.__TAURI__.core.convertFileSrc(iconPath);
-    } else {
-      img.src = `https://asset.localhost/${encodeURIComponent(iconPath)}`;
-    }
+    img.src = convertFileSrc(iconPath);
   } catch (e) {
     console.warn("[FromZero] Icon URL error:", e);
     setTimeout(() => replaceWithFallbackEmoji(img, cssClass), 0);
@@ -480,8 +489,7 @@ async function handleSearch() {
       const searchWord = match[2];
       const engineUrl = settings.web_engines[prefix];
       const targetUrl = engineUrl.replace("{}", encodeURIComponent(searchWord));
-      const knownEngines = { g: "Google", b: "百度", bi: "Bing", gh: "GitHub" };
-      const engineName = knownEngines[prefix] || (prefix.charAt(0).toUpperCase() + prefix.slice(1));
+      const engineName = getEngineName(prefix);
       if (searchIndicator) searchIndicator.textContent = "🌐";
       filteredItems = [{
         type: "web",
@@ -495,7 +503,6 @@ async function handleSearch() {
     } else {
       if (searchIndicator) searchIndicator.textContent = "🔍";
       try {
-        ensureTauri();
         const results = await invoke("search_apps", { query });
         if (currentSearchId !== lastSearchId) return;
         filteredItems = results.slice(0, 7).map(app => ({
@@ -528,14 +535,18 @@ async function handleSearch() {
 
 function renderResults() {
   if (!resultsList) return;
-  resultsList.innerHTML = "";
+  clearChildren(resultsList);
   if (filteredItems.length === 0) {
-    resultsList.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dim); font-size: 13px;">无搜索匹配项</div>`;
+    const emptyDiv = document.createElement("div");
+    emptyDiv.className = "results-empty";
+    emptyDiv.textContent = "无搜索匹配项";
+    resultsList.appendChild(emptyDiv);
     return;
   }
   filteredItems.forEach((item, index) => {
     const el = document.createElement("div");
     el.className = `result-item ${index === selectedIndex ? "selected" : ""}`;
+    el.style.animationDelay = `${index * 25}ms`;
     const iconWrapper = document.createElement("div");
     iconWrapper.className = "result-icon-wrapper";
     if (item.icon === "⚡" || item.icon === "📂" || item.icon === "🌐") {
@@ -595,7 +606,6 @@ function updateSelectionVisual() {
 
 async function executeItemAction(item) {
   try {
-    ensureTauri();
     if (item.type === "app") {
       const app = item.data;
       await invoke("launch_app", { path: app.path });
@@ -682,8 +692,11 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "Escape") {
     e.preventDefault();
-    ensureTauri();
-    appWindow.hide().catch(() => {});
+    try {
+      await appWindow.hide();
+    } catch (e) {
+      console.warn("[FromZero] Hide on escape failed:", e);
+    }
   } else if (e.ctrlKey && (e.key === "," || e.code === "Comma")) {
     e.preventDefault();
     openSettings();
@@ -713,7 +726,6 @@ function closeSettings() {
 
 async function saveSettingsConfig() {
   try {
-    ensureTauri();
     if (themeSelect) settings.theme = themeSelect.value;
     if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
     if (autostartToggle) settings.autostart = autostartToggle.checked;

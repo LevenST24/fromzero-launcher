@@ -65,14 +65,40 @@ pub fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Ve
     Ok(apps)
 }
 
+/// Score an app name against a query string. Returns 0 for no match.
+/// Scoring: perfect=100, prefix=80, contains=60, pinyin_initials_prefix=50,
+/// pinyin_initials_contains=40, pinyin_full_prefix=30, pinyin_full_contains=20
+fn score_app(query_lower: &str, name_lower: &str, initials_lower: &str, full_lower: &str) -> u32 {
+    if name_lower == query_lower {
+        100
+    } else if name_lower.starts_with(query_lower) {
+        80
+    } else if name_lower.contains(query_lower) {
+        60
+    } else if initials_lower.starts_with(query_lower) {
+        50
+    } else if initials_lower.contains(query_lower) {
+        40
+    } else if full_lower.starts_with(query_lower) {
+        30
+    } else if full_lower.contains(query_lower) {
+        20
+    } else {
+        0
+    }
+}
+
 #[tauri::command]
 pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
     let query_lower = query.to_lowercase().trim().to_string();
-    
+
     // Lock and inspect cache directly to eliminate deep cloning on every keystroke
     let apps_cache = match state.apps.lock() {
         Ok(cache) => cache,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            eprintln!("[FromZero] Apps lock poisoned: {}", e);
+            return Vec::new();
+        }
     };
 
     if query_lower.is_empty() {
@@ -85,23 +111,7 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
         let initials_lower = app.pinyin_initials.to_lowercase();
         let full_lower = app.pinyin_full.to_lowercase();
 
-        let mut score = 0;
-        
-        if name_lower == query_lower {
-            score = 100; // Perfect match
-        } else if name_lower.starts_with(&query_lower) {
-            score = 80;
-        } else if name_lower.contains(&query_lower) {
-            score = 60;
-        } else if initials_lower.starts_with(&query_lower) {
-            score = 50; // Pinyin initials (e.g. "wx" matches "微信")
-        } else if initials_lower.contains(&query_lower) {
-            score = 40;
-        } else if full_lower.starts_with(&query_lower) {
-            score = 30; // Pinyin full (e.g. "weixin" matches "微信")
-        } else if full_lower.contains(&query_lower) {
-            score = 20;
-        }
+        let score = score_app(&query_lower, &name_lower, &initials_lower, &full_lower);
 
         if score > 0 {
             scored_apps.push((score, app.clone())); // Clone only matched items
@@ -241,4 +251,57 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
 pub fn debug_log(_msg: String) {
     #[cfg(debug_assertions)]
     println!("[Frontend-Debug] {}", _msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_score_app_perfect_match() {
+        assert_eq!(score_app("chrome", "chrome", "chrome", "chrome"), 100);
+    }
+
+    #[test]
+    fn test_score_app_prefix_match() {
+        assert_eq!(score_app("ch", "chrome", "chrome", "chrome"), 80);
+    }
+
+    #[test]
+    fn test_score_app_contains_match() {
+        assert_eq!(score_app("rom", "chrome", "chrome", "chrome"), 60);
+    }
+
+    #[test]
+    fn test_score_app_pinyin_initials_prefix() {
+        // "wx" matches "微信" via pinyin initials "wx"
+        assert_eq!(score_app("wx", "微信", "wx", "weixin"), 50);
+    }
+
+    #[test]
+    fn test_score_app_pinyin_initials_contains() {
+        assert_eq!(score_app("x", "微信", "wx", "weixin"), 40);
+    }
+
+    #[test]
+    fn test_score_app_pinyin_full_prefix() {
+        assert_eq!(score_app("weix", "微信", "wx", "weixin"), 30);
+    }
+
+    #[test]
+    fn test_score_app_pinyin_full_contains() {
+        assert_eq!(score_app("ixin", "微信", "wx", "weixin"), 20);
+    }
+
+    #[test]
+    fn test_score_app_no_match() {
+        assert_eq!(score_app("xyz", "微信", "wx", "weixin"), 0);
+    }
+
+    #[test]
+    fn test_score_app_caller_handles_case() {
+        // The caller lowercases the query before passing; score_app expects lowercase input
+        let query_lower = "chrome".to_lowercase();
+        assert_eq!(score_app(&query_lower, "chrome", "chrome", "chrome"), 100);
+    }
 }

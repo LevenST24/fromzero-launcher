@@ -8,37 +8,6 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WebviewWindow};
 
-#[allow(dead_code)]
-fn apply_window_vibrancy(window: &WebviewWindow) {
-    #[cfg(target_os = "windows")]
-    {
-        // Try Acrylic FIRST — most visible frosted glass effect, works on Windows 10+
-        // Tint (R, G, B, Alpha): Alpha 25/255 = ~10% tint, letting 90% of blur show through
-        match window_vibrancy::apply_acrylic(window, Some((18, 18, 26, 25))) {
-            Ok(_) => {
-                eprintln!("[FromZero] ✓ Acrylic blur applied successfully");
-                return;
-            }
-            Err(e) => eprintln!("[FromZero] Acrylic failed: {e}, trying Mica..."),
-        }
-
-        // Try Mica (Windows 11 22H2+) — premium subtle blur
-        match window_vibrancy::apply_mica(window, Some(true)) {
-            Ok(_) => {
-                eprintln!("[FromZero] ✓ Mica blur applied successfully");
-                return;
-            }
-            Err(e) => eprintln!("[FromZero] Mica failed: {e}, trying basic Blur..."),
-        }
-
-        // Final fallback: basic DWM blur
-        match window_vibrancy::apply_blur(window, Some((18, 18, 24, 160))) {
-            Ok(_) => eprintln!("[FromZero] ✓ Basic blur applied successfully"),
-            Err(e) => eprintln!("[FromZero] ✗ All blur effects failed: {e}"),
-        }
-    }
-}
-
 fn should_toggle_from_tray_event(event: &TrayIconEvent) -> bool {
     match event {
         // DoubleClick is Windows-only; prefer it to avoid duplicate Click events on that platform.
@@ -57,12 +26,19 @@ fn should_toggle_from_tray_event(event: &TrayIconEvent) -> bool {
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
+
+    let tray_icon = app.default_window_icon();
+    if tray_icon.is_none() {
+        eprintln!("[FromZero] Warning: No default window icon available, skipping tray icon setup");
+        return Ok(());
+    }
+
     let quit_i = MenuItem::with_id(handle, "quit", "退出 FromZero Launcher", true, None::<&str>)?;
     let show_i = MenuItem::with_id(handle, "show", "呼出启动器", true, None::<&str>)?;
     let menu = Menu::with_items(handle, &[&show_i, &quit_i])?;
 
     let tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon.unwrap().clone())
         .tooltip("FromZero Launcher — 双击呼出，右键菜单")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -133,7 +109,10 @@ pub fn run() {
             commands::debug_log,
         ])
         .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
+            let Some(window) = app.get_webview_window("main") else {
+                eprintln!("[FromZero] Error: Main window not found during setup");
+                return Err(Box::from("Main window not found during setup"));
+            };
 
             // 1. Load settings
             let settings = settings::load_settings(app.handle());
@@ -199,6 +178,12 @@ pub fn run() {
 fn remove_dwm_border(window: &WebviewWindow) {
     use std::ffi::c_void;
 
+    // DWM attribute constants
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWM_COLOR_NONE: u32 = 0xFFFFFFFE;
+
     type DwmSetWindowAttributeFn = unsafe extern "system" fn(
         hwnd: *mut c_void,
         dw_attribute: u32,
@@ -207,10 +192,13 @@ fn remove_dwm_border(window: &WebviewWindow) {
     ) -> i32;
 
     unsafe {
-        let module_name = std::ffi::CString::new("dwmapi.dll").unwrap();
+        // SAFETY: These are compile-time string constants that cannot contain null bytes.
+        let module_name = std::ffi::CString::new("dwmapi.dll")
+            .expect("hardcoded ASCII string cannot contain null bytes");
         let handle = winapi::um::libloaderapi::LoadLibraryA(module_name.as_ptr());
         if !handle.is_null() {
-            let func_name = std::ffi::CString::new("DwmSetWindowAttribute").unwrap();
+            let func_name = std::ffi::CString::new("DwmSetWindowAttribute")
+                .expect("hardcoded ASCII string cannot contain null bytes");
             let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle, func_name.as_ptr());
             if !proc_addr.is_null() {
                 let dwm_set_window_attribute: DwmSetWindowAttributeFn = std::mem::transmute(proc_addr);
@@ -221,10 +209,10 @@ fn remove_dwm_border(window: &WebviewWindow) {
                     // This is critical because DWM rounding natively draws a 1px border around the window.
                     // By forcing DONOTROUND, the window remains a perfect native rectangle, and our CSS border-radius
                     // rounds it smoothly inside WebView2 without drawing any native system borders.
-                    let corner_preference: u32 = 1; // DWMWCP_DONOTROUND = 1
+                    let corner_preference: u32 = DWMWCP_DONOTROUND;
                     let hr_corner = dwm_set_window_attribute(
                         raw_hwnd,
-                        33, // DWMWA_WINDOW_CORNER_PREFERENCE = 33
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
                         &corner_preference as *const _ as *const c_void,
                         std::mem::size_of::<u32>() as u32,
                     );
@@ -235,10 +223,10 @@ fn remove_dwm_border(window: &WebviewWindow) {
                     }
 
                     // 2. Set DWM border color to NONE.
-                    let border_color: u32 = 0xFFFFFFFE; // DWM_COLOR_NONE = 0xFFFFFFFE
+                    let border_color: u32 = DWM_COLOR_NONE;
                     let hr_border = dwm_set_window_attribute(
                         raw_hwnd,
-                        34, // DWMWA_BORDER_COLOR = 34
+                        DWMWA_BORDER_COLOR,
                         &border_color as *const _ as *const c_void,
                         std::mem::size_of::<u32>() as u32,
                     );

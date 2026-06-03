@@ -579,14 +579,7 @@ body {
   border-color: rgba(74, 114, 255, 0.25);
 }
 
-.result-item:nth-child(1) { animation-delay: 0ms; }
-.result-item:nth-child(2) { animation-delay: 25ms; }
-.result-item:nth-child(3) { animation-delay: 50ms; }
-.result-item:nth-child(4) { animation-delay: 75ms; }
-.result-item:nth-child(5) { animation-delay: 100ms; }
-.result-item:nth-child(6) { animation-delay: 125ms; }
-.result-item:nth-child(7) { animation-delay: 150ms; }
-.result-item:nth-child(8) { animation-delay: 175ms; }
+/* Animation delays are now set dynamically via JS (el.style.animationDelay) */
 
 @keyframes itemSlide {
   from { opacity: 0; transform: translateY(6px); }
@@ -1000,5 +993,42 @@ input:checked + .slider {
 
 input:checked + .slider:before {
   transform: translate3d(20px, 0, 0);
+}
+
+/* ── Settings: Autostart row (replaces inline styles) ── */
+.settings-autostart-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.settings-label-inline {
+  margin-bottom: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Settings: Engine display input (replaces inline styles) ── */
+.settings-engine-display {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* ── Recent apps: empty state ── */
+.recent-empty {
+  grid-column: span 4;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 20px;
+}
+
+/* ── Results: empty state ── */
+.results-empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-dim);
+  font-size: 13px;
 }
 

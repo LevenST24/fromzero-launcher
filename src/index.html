@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FromZero Launcher</title>
     <link rel="stylesheet" href="styles.css" />
-    <script type="module" src="/main.js?v=1"></script>
+    <script src="/main.js?v=1"></script>
   </head>
 
   <body>
@@ -24,24 +24,24 @@
         <filter id="liquid-glass" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
           <!-- Step 1: Generate organic fractal noise for glass surface imperfections -->
           <feTurbulence type="fractalNoise" baseFrequency="0.012 0.018" numOctaves="3" seed="8" result="noise" />
-          
+
           <!-- Step 2: Smooth the noise to create broad, gentle glass surface undulations -->
           <feGaussianBlur in="noise" stdDeviation="6" result="smoothNoise" />
-          
+
           <!-- Step 3: Displace the source through the smoothed noise → liquid refraction effect -->
           <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale="18" xChannelSelector="R" yChannelSelector="G" result="refracted" />
-          
+
           <!-- Step 4: Apply gaussian blur for frosted glass depth -->
           <feGaussianBlur in="refracted" stdDeviation="12" result="blurredRefracted" />
-          
+
           <!-- Step 5: Specular lighting on the noise creates light-catching glass surface highlights -->
           <feSpecularLighting in="smoothNoise" surfaceScale="2" specularConstant="0.6" specularExponent="25" lighting-color="#ffffff" result="specular">
             <fePointLight x="200" y="80" z="220" />
           </feSpecularLighting>
-          
+
           <!-- Step 6: Clip specular to source alpha -->
           <feComposite in="specular" in2="SourceGraphic" operator="in" result="clippedSpecular" />
-          
+
           <!-- Step 7: Blend the specular highlights over the blurred refracted backdrop -->
           <feBlend in="blurredRefracted" in2="clippedSpecular" mode="screen" />
         </filter>
@@ -146,8 +146,8 @@
           </div>
 
           <!-- 开机自启动 -->
-          <div class="settings-group" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-            <label class="settings-label" style="margin-bottom: 0; text-transform: uppercase; letter-spacing: 0.5px;">开机自启动</label>
+          <div class="settings-group settings-autostart-row">
+            <label class="settings-label settings-label-inline">开机自启动</label>
             <label class="switch">
               <input type="checkbox" id="autostart-toggle" />
               <span class="slider"></span>
@@ -159,8 +159,7 @@
             <label class="settings-label">搜索引擎前缀</label>
             <input
               type="text"
-              class="settings-input"
-              style="font-family: var(--font-mono); font-size: 12px; margin-bottom: 6px;"
+              class="settings-input settings-engine-display"
               value="g : Google | b : 百度 | bi : Bing | gh : GitHub"
               disabled
             />
