@@ -732,7 +732,12 @@ async function saveSettingsConfig() {
     applyTheme(settings.theme);
     await invoke("update_settings", { settings });
     closeSettings();
-    if (searchInput) searchInput.focus();
+    // Auto-hide window after saving settings — user expectation: save = done, go back to work
+    try {
+      await appWindow.hide();
+    } catch (e) {
+      console.warn("[FromZero] Hide after save failed:", e);
+    }
   } catch (error) {
     console.error("[FromZero] Save settings error:", error);
     if (footerStatus) footerStatus.textContent = `保存设置失败: ${error}`;
