@@ -263,42 +263,29 @@ fn run_command_with_timeout(
     let child_id = child.id();
     let (tx, rx) = mpsc::channel();
 
-    // Spawn waiter thread
-    let tx_clone = tx.clone();
+    // Spawn waiter thread to wait for process exit and read its output
     thread::spawn(move || {
         let res = child.wait_with_output();
-        let _ = tx_clone.send(res);
+        let _ = tx.send(res);
     });
 
-    // Spawn timeout thread
-    let tx_timeout = tx;
-    thread::spawn(move || {
-        thread::sleep(timeout);
-        let _ = tx_timeout.send(Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "Command timed out",
-        )));
-    });
-
-    match rx.recv() {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => {
-            if e.kind() == std::io::ErrorKind::TimedOut {
-                // Kill process if it times out
-                #[cfg(target_os = "windows")]
-                {
-                    use std::os::windows::process::CommandExt;
-                    let mut kill_cmd = std::process::Command::new("taskkill");
-                    kill_cmd.args(["/F", "/PID", &child_id.to_string()]);
-                    kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                    let _ = kill_cmd.status();
-                }
+    // Wait for the channel with the specified timeout
+    match rx.recv_timeout(timeout) {
+        Ok(res) => res,
+        Err(_) => {
+            // Kill the process if it timed out or if the channel disconnected
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                let mut kill_cmd = std::process::Command::new("taskkill");
+                kill_cmd.args(["/F", "/PID", &child_id.to_string()]);
+                kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                let _ = kill_cmd.status();
             }
-            Err(e)
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Command timed out or channel disconnected",
+            ))
         }
-        Err(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Channel disconnected before output received",
-        )),
     }
 }
