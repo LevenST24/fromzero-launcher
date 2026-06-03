@@ -61,7 +61,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_i = MenuItem::with_id(handle, "show", "呼出启动器", true, None::<&str>)?;
     let menu = Menu::with_items(handle, &[&show_i, &quit_i])?;
 
-    let _tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("FromZero Launcher — 双击呼出，右键菜单")
         .menu(&menu)
@@ -97,6 +97,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
 
+    // Store tray icon in managed state to extend its lifetime and prevent garbage collection drop
+    let state = handle.state::<AppState>();
+    if let Ok(mut tray_guard) = state.tray.lock() {
+        *tray_guard = Some(tray);
+    }
+
     Ok(())
 }
 
@@ -112,6 +118,7 @@ pub fn run() {
         .manage(AppState {
             apps: Mutex::new(Vec::new()),
             settings_lock: Mutex::new(()),
+            tray: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
@@ -145,7 +152,13 @@ pub fn run() {
                     let fallback = "Ctrl+Alt+Space";
                     eprintln!("[FromZero]   Trying fallback: {fallback}");
                     match commands::register_shortcut_internal(app.handle(), fallback) {
-                        Ok(_) => eprintln!("[FromZero] ✓ Fallback shortcut '{fallback}' registered"),
+                        Ok(_) => {
+                            eprintln!("[FromZero] ✓ Fallback shortcut '{fallback}' registered");
+                            // Persist fallback shortcut back to settings file so configuration matches actual bound key
+                            let mut updated_settings = settings.clone();
+                            updated_settings.shortcut = fallback.to_string();
+                            let _ = settings::save_settings(app.handle(), &updated_settings);
+                        }
                         Err(e2) => eprintln!("[FromZero] ✗ Fallback also failed: {e2}"),
                     }
                 }

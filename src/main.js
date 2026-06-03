@@ -89,9 +89,6 @@ function ensureTauri() {
 
 ensureTauri();
 
-function logDebug(msg) {
-  console.log(msg);
-}
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -171,9 +168,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       searchInput.addEventListener("compositionend", () => {
         isComposing = false;
         clearTimeout(searchDebounceTimeout);
-        logDebug("[Debug] compositionend: scheduling search, current timeout: " + searchDebounceTimeout);
         searchDebounceTimeout = setTimeout(() => {
-          logDebug("[Debug] search timeout fired (compositionend)");
           searchDebounceTimeout = null;
           handleSearch();
         }, 100);
@@ -181,9 +176,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
         clearTimeout(searchDebounceTimeout);
-        logDebug("[Debug] input event: value = " + searchInput.value + ", scheduling search, current timeout: " + searchDebounceTimeout);
         searchDebounceTimeout = setTimeout(() => {
-          logDebug("[Debug] search timeout fired (input)");
           searchDebounceTimeout = null;
           handleSearch();
         }, 100);
@@ -576,6 +569,14 @@ async function executeItemAction(item) {
         console.error("[FromZero] Failed thread-safe recent app bump:", bumpError);
       }
     } else if (item.type === "sys") {
+      if (item.data === "shutdown" || item.data === "restart") {
+        if (!item.confirmed) {
+          item.confirmed = true;
+          item.title = `⚠️ 确认${item.data === "shutdown" ? "关闭计算机" : "重新启动"}？(再次按回车/点击以确认)`;
+          renderResults();
+          return;
+        }
+      }
       await invoke("execute_sys_command", { command: item.data });
     } else if (item.type === "folder") {
       await invoke("open_folder", { path: item.data });
@@ -608,7 +609,6 @@ async function handleGlobalKeys(e) {
   if (e.key === "ArrowDown") {
     e.preventDefault();
     if (searchDebounceTimeout) {
-      logDebug("[Debug] ArrowDown: clearing searchDebounceTimeout and running search immediately");
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
@@ -622,7 +622,6 @@ async function handleGlobalKeys(e) {
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
     if (searchDebounceTimeout) {
-      logDebug("[Debug] ArrowUp: clearing searchDebounceTimeout and running search immediately");
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
@@ -635,15 +634,11 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "Enter") {
     e.preventDefault();
-    logDebug("[Debug] Enter keydown pressed. searchDebounceTimeout: " + searchDebounceTimeout + ", selectedIndex: " + selectedIndex + ", filteredItems length: " + filteredItems.length);
     if (searchDebounceTimeout && selectedIndex === 0) {
-      logDebug("[Debug] Enter: clearing searchDebounceTimeout and running immediate search");
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
-      logDebug("[Debug] Enter: handleSearch finished. selectedIndex reset to: " + selectedIndex);
     }
-    logDebug("[Debug] Enter: launching item at selectedIndex: " + selectedIndex + ", item: " + JSON.stringify(filteredItems[selectedIndex]));
     if (filteredItems.length > 0 && filteredItems[selectedIndex]) {
       executeItemAction(filteredItems[selectedIndex]);
     }

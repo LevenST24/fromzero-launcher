@@ -73,6 +73,32 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
     Settings::default()
 }
 
+#[cfg(target_os = "windows")]
+fn save_settings_win_atomic(from_path: &std::path::Path, to_path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    
+    extern "system" {
+        fn MoveFileExW(
+            lpExistingFileName: *const u16,
+            lpNewFileName: *const u16,
+            dwFlags: u32,
+        ) -> i32;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 1;
+    
+    let from: Vec<u16> = from_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    
+    let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
+    if ok == 0 {
+        return Err(format!(
+            "Failed to atomically replace settings file: Windows OS Error {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), String> {
     use std::fs::File;
     use std::io::Write;
@@ -96,16 +122,26 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
                 .map_err(|e| format!("Failed to sync temporary settings file: {}", e))?;
         }
             
-        // Windows atomic replacement safely: if rename fails because destination exists,
-        // we can try removing the destination first on Windows.
-        if path.exists() {
-            let _ = fs::remove_file(&path);
+        // Perform atomic replacement: MoveFileExW on Windows (NTFS single-step transaction),
+        // or std::fs::rename on POSIX systems (which is natively atomic).
+        let replace_res = {
+            #[cfg(target_os = "windows")]
+            {
+                save_settings_win_atomic(&tmp_path, &path)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                fs::rename(&tmp_path, &path)
+                    .map_err(|e| format!("Failed to replace settings file: {}", e))
+            }
+        };
+
+        // Clean up temp file on failure to avoid leaking temp files
+        if replace_res.is_err() {
+            let _ = fs::remove_file(&tmp_path);
         }
         
-        fs::rename(&tmp_path, &path)
-            .map_err(|e| format!("Failed to replace settings file: {}", e))?;
-            
-        Ok(())
+        replace_res
     } else {
         Err("Failed to resolve settings path".to_string())
     }

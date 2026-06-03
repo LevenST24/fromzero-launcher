@@ -84,7 +84,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-    let output = cmd.output();
+    let output = run_command_with_timeout(cmd, std::time::Duration::from_secs(10));
 
     if let Ok(out) = output {
         let json_str = String::from_utf8_lossy(&out.stdout);
@@ -195,9 +195,23 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
             return;
         }
 
-        // Create temporary JSON file in cache folder to handle unlimited item counts safely without CLI args limits
-        let cache_dir = app_handle.path().app_cache_dir().unwrap_or_default();
-        let temp_json_path = cache_dir.join("icon_targets.json");
+        let cache_dir = match app_handle.path().app_cache_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("[FromZero] Failed to resolve cache directory for icon extraction: {}", e);
+                return;
+            }
+        };
+
+        // Create temporary JSON file in cache folder to handle unlimited item counts safely without CLI args limits.
+        // We use system time and thread ID to generate a unique filename, preventing race conditions from concurrent scans.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let thread_id = format!("{:?}", thread::current().id());
+        let sanitized_thread_id: String = thread_id.chars().filter(|c| c.is_alphanumeric()).collect();
+        let temp_json_path = cache_dir.join(format!("icon_targets_{}_{}.json", now, sanitized_thread_id));
         
         if let Ok(json_content) = serde_json::to_string(&items_to_extract) {
             if fs::write(&temp_json_path, json_content).is_ok() {
@@ -217,7 +231,7 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-                if let Ok(output) = cmd.output() {
+                if let Ok(output) = run_command_with_timeout(cmd, std::time::Duration::from_secs(15)) {
                     let out_str = String::from_utf8_lossy(&output.stdout);
                     for line in out_str.lines() {
                         let trimmed = line.trim();
@@ -233,4 +247,58 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
             let _ = fs::remove_file(&temp_json_path);
         }
     });
+}
+
+fn run_command_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = cmd.spawn()?;
+    let child_id = child.id();
+    let (tx, rx) = mpsc::channel();
+
+    // Spawn waiter thread
+    let tx_clone = tx.clone();
+    thread::spawn(move || {
+        let res = child.wait_with_output();
+        let _ = tx_clone.send(res);
+    });
+
+    // Spawn timeout thread
+    let tx_timeout = tx;
+    thread::spawn(move || {
+        thread::sleep(timeout);
+        let _ = tx_timeout.send(Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Command timed out",
+        )));
+    });
+
+    match rx.recv() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                // Kill process if it times out
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    let mut kill_cmd = std::process::Command::new("taskkill");
+                    kill_cmd.args(["/F", "/PID", &child_id.to_string()]);
+                    kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                    let _ = kill_cmd.status();
+                }
+            }
+            Err(e)
+        }
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Channel disconnected before output received",
+        )),
+    }
 }

@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 pub struct AppState {
     pub apps: Mutex<Vec<AppItem>>,
     pub settings_lock: Mutex<()>,
+    pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
 }
 
 #[tauri::command]
@@ -124,11 +125,15 @@ pub fn launch_app(path: String) -> Result<(), String> {
 pub fn open_folder(path: String) -> Result<(), String> {
     // Clean and translate Unix-style folder paths to Windows paths
     let mut resolved = path.replace('/', "\\");
+    
+    // Resolve Windows system drive dynamically instead of hardcoding C:
+    let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    
     if resolved == "\\" {
-        resolved = "C:\\".to_string();
+        resolved = format!("{}\\", system_drive);
     } else if resolved.starts_with('\\') && !resolved.starts_with("\\\\") {
         // e.g. "/Windows" -> "C:\Windows"
-        resolved = format!("C:{}", resolved);
+        resolved = format!("{}{}", system_drive, resolved);
     }
 
     let path_buf = std::path::PathBuf::from(&resolved);
@@ -141,7 +146,13 @@ pub fn open_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_search(url: String) -> Result<(), String> {
-    open::that(&url).map_err(|e| format!("Failed to open search: {}", e))
+    // Security restriction: Only allow standard HTTP/HTTPS schemes to prevent protocol handler abuses
+    let trimmed = url.trim();
+    let lower = trimmed.to_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err("Security Error: Only http:// and https:// URL protocol schemas are allowed".to_string());
+    }
+    open::that(trimmed).map_err(|e| format!("Failed to open search: {}", e))
 }
 
 #[tauri::command]
