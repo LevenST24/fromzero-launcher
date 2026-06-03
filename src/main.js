@@ -725,14 +725,18 @@ function closeSettings() {
 }
 
 async function saveSettingsConfig() {
+  // Collect UI values first
+  if (themeSelect) settings.theme = themeSelect.value;
+  if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
+  if (autostartToggle) settings.autostart = autostartToggle.checked;
+  applyTheme(settings.theme);
+
+  // Close settings panel immediately — user expectation: save = done
+  closeSettings();
+
   try {
-    if (themeSelect) settings.theme = themeSelect.value;
-    if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
-    if (autostartToggle) settings.autostart = autostartToggle.checked;
-    applyTheme(settings.theme);
     await invoke("update_settings", { settings });
-    closeSettings();
-    // Auto-hide window after saving settings — user expectation: save = done, go back to work
+    // Auto-hide window after saving — back to work
     try {
       await appWindow.hide();
     } catch (e) {
