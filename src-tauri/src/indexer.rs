@@ -22,6 +22,8 @@ struct RawAppItem {
     name: String,
     path: String,
     target: String,
+    #[serde(default)]
+    arguments: String,
 }
 
 pub fn get_pinyin(text: &str) -> (String, String) {
@@ -45,7 +47,9 @@ pub fn get_pinyin(text: &str) -> (String, String) {
 
 pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     let mut apps = Vec::new();
-    let mut seen_targets = HashSet::new();
+    // Dedup by (target, arguments) so that PWA shortcuts pointing to the same
+    // browser executable but with different --app-id arguments are kept separately.
+    let mut seen_target_args = HashSet::new();
 
     // PowerShell script to recursively query start menu and resolve all shortcut links safely using WScript.Shell COM
     let ps_command = r#"
@@ -61,7 +65,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         if ($env:APPDATA) {
             $paths += Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs";
         }
-        
+
         $results = Get-ChildItem -Path $paths -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
             try {
                 $lnk = $sh.CreateShortcut($_.FullName);
@@ -70,6 +74,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     name = $_.BaseName;
                     path = $_.FullName;
                     target = if ([string]::IsNullOrEmpty($target)) { $_.FullName } else { $target }
+                    arguments = if ($lnk.Arguments) { $lnk.Arguments } else { '' }
                 }
             } catch { Write-Warning "Failed to resolve shortcut: $($_.Exception.Message)" }
         };
@@ -127,11 +132,13 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     continue;
                 }
 
-                // Prevent duplicates pointing to the same target executable
-                if seen_targets.contains(&item.target) {
+                // Dedup by (target, arguments) so PWA shortcuts with different
+                // --app-id arguments are kept even when they share the same browser executable
+                let dedup_key = format!("{}|{}", item.target.to_lowercase(), item.arguments.to_lowercase());
+                if seen_target_args.contains(&dedup_key) {
                     continue;
                 }
-                seen_targets.insert(item.target.clone());
+                seen_target_args.insert(dedup_key);
 
                 // Generate safe cached icon path
                 let icon_name = format!("{:x}.png", get_path_hash(&item.path));

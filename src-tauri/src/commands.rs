@@ -118,8 +118,11 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
         }
     }
 
-    // Sort by score (descending)
-    scored_apps.sort_by(|a, b| b.0.cmp(&a.0));
+    // Sort by score (descending), then by name alphabetically as tiebreaker
+    scored_apps.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()))
+    });
     scored_apps.into_iter().map(|(_, app)| app).collect()
 }
 
@@ -222,11 +225,10 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
     let shortcut = Shortcut::from_str(shortcut_str)
         .map_err(|e| format!("Invalid shortcut format '{}': {}", shortcut_str, e))?;
 
-    // Try unregistering all to prevent double-binding errors
-    let _ = app_handle.global_shortcut().unregister_all();
-
-    // Register and register toggle visibility handler
-    app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
+    // First, try registering the new shortcut WITHOUT removing the old one.
+    // If it succeeds, then unregister all + re-register to cleanly replace.
+    // If it fails, the old shortcut remains intact — no silent hotkey loss.
+    let test_result = app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
         // Only handle key press, not release
         if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
             if let Some(window) = app.get_webview_window("main") {
@@ -242,9 +244,42 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
                 }
             }
         }
-    }).map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
+    });
 
-    Ok(())
+    match test_result {
+        Ok(_) => {
+            // New shortcut registered successfully — clean up by removing all old ones,
+            // then re-register the new one (unregister_all clears it too)
+            let _ = app_handle.global_shortcut().unregister_all();
+
+            // Re-register the verified shortcut
+            let shortcut2 = Shortcut::from_str(shortcut_str)
+                .map_err(|e| format!("Invalid shortcut format '{}': {}", shortcut_str, e))?;
+            app_handle.global_shortcut().on_shortcut(shortcut2, move |app, _shortcut, event| {
+                if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
+                    if let Some(window) = app.get_webview_window("main") {
+                        if let Ok(visible) = window.is_visible() {
+                            if visible {
+                                eprintln!("[FromZero] Shortcut: hiding window");
+                                let _ = window.hide();
+                            } else {
+                                eprintln!("[FromZero] Shortcut: showing window");
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                }
+            }).map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
+
+            eprintln!("[FromZero] ✓ Shortcut '{}' registered successfully", shortcut_str);
+            Ok(())
+        }
+        Err(e) => {
+            // New shortcut failed — old one is still active, no disruption
+            Err(format!("Failed to register shortcut '{}': {}. Old shortcut remains active.", shortcut_str, e))
+        }
+    }
 }
 
 #[tauri::command]
