@@ -209,6 +209,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
 }
 
 #[tauri::command]
-pub fn debug_log(msg: String) {
-    println!("[Frontend-Debug] {}", msg);
+pub fn debug_log(_msg: String) {
+    #[cfg(debug_assertions)]
+    println!("[Frontend-Debug] {}", _msg);
 }

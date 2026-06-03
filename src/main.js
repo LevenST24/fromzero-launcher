@@ -49,33 +49,41 @@ const SYSTEM_COMMANDS = [
 // =============================================
 let invoke = null;
 let appWindow = null;
+let isMock = false;
+
+// Animation loop state
+let springAnimationId = null;
+let startSprings = null;
+let stopSprings = null;
 
 function ensureTauri() {
-  if (!invoke || !appWindow) {
-    if (window.__TAURI__) {
+  if (window.__TAURI__) {
+    if (isMock || !invoke || !appWindow) {
       invoke = window.__TAURI__.core.invoke;
       appWindow = window.__TAURI__.window.getCurrentWindow();
-    } else {
-      console.warn("[FromZero] __TAURI__ not found, setting up fallback mocks");
-      invoke = async (cmd, args) => {
-        console.log(`[Mock Invoke] ${cmd}`, args);
-        if (cmd === "get_settings") {
-          return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [] };
-        }
-        if (cmd === "scan_apps") return [];
-        if (cmd === "search_apps") return [];
-        return {};
-      };
-      appWindow = {
-        hide: async () => console.log("[Mock AppWindow] hide"),
-        show: async () => console.log("[Mock AppWindow] show"),
-        setFocus: async () => console.log("[Mock AppWindow] setFocus"),
-        listen: (event, callback) => {
-          console.log(`[Mock AppWindow] listen for ${event}`);
-          return () => {};
-        }
-      };
+      isMock = false;
     }
+  } else if (!invoke || !appWindow) {
+    console.warn("[FromZero] __TAURI__ not found, setting up fallback mocks");
+    isMock = true;
+    invoke = async (cmd, args) => {
+      console.log(`[Mock Invoke] ${cmd}`, args);
+      if (cmd === "get_settings") {
+        return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [], autostart: false };
+      }
+      if (cmd === "scan_apps") return [];
+      if (cmd === "search_apps") return [];
+      return {};
+    };
+    appWindow = {
+      hide: async () => console.log("[Mock AppWindow] hide"),
+      show: async () => console.log("[Mock AppWindow] show"),
+      setFocus: async () => console.log("[Mock AppWindow] setFocus"),
+      listen: (event, callback) => {
+        console.log(`[Mock AppWindow] listen for ${event}`);
+        return () => {};
+      }
+    };
   }
 }
 
@@ -83,9 +91,6 @@ ensureTauri();
 
 function logDebug(msg) {
   console.log(msg);
-  if (invoke) {
-    invoke("debug_log", { msg: String(msg) }).catch(() => {});
-  }
 }
 
 // =============================================
@@ -94,6 +99,7 @@ function logDebug(msg) {
 
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
+  if (startSprings) startSprings();
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
@@ -102,6 +108,7 @@ window.addEventListener("focus", () => {
 });
 
 window.addEventListener("blur", () => {
+  if (stopSprings) stopSprings();
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
     return;
@@ -210,7 +217,10 @@ window.addEventListener("DOMContentLoaded", async () => {
       const shDamping = 0.16;
 
       function updateSprings() {
-        if (!document.getElementById("launcher-container")) return;
+        if (!document.getElementById("launcher-container")) {
+          springAnimationId = null;
+          return;
+        }
 
         let targetShX = -999;
         let targetShY = -999;
@@ -245,11 +255,24 @@ window.addEventListener("DOMContentLoaded", async () => {
           container.style.setProperty("--my", `${shY}px`);
         }
 
-        requestAnimationFrame(updateSprings);
+        springAnimationId = requestAnimationFrame(updateSprings);
       }
 
+      startSprings = () => {
+        if (!springAnimationId) {
+          springAnimationId = requestAnimationFrame(updateSprings);
+        }
+      };
+
+      stopSprings = () => {
+        if (springAnimationId) {
+          cancelAnimationFrame(springAnimationId);
+          springAnimationId = null;
+        }
+      };
+
       // Start the animation loop
-      requestAnimationFrame(updateSprings);
+      startSprings();
 
       container.addEventListener("mouseenter", () => {
         isHovered = true;
@@ -271,6 +294,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       appWindow.listen("tauri://focus", () => {
         lastShowTime = Date.now();
         if (searchInput) searchInput.focus();
+        if (startSprings) startSprings();
+      });
+
+      appWindow.listen("tauri://blur", () => {
+        if (stopSprings) stopSprings();
       });
 
       if (window.__TAURI__.event?.listen) {
