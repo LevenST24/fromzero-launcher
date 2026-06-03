@@ -52,7 +52,12 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
         $OutputEncoding = [System.Text.Encoding]::UTF8;
         $sh = New-Object -ComObject WScript.Shell;
-        $paths = @("C:\ProgramData\Microsoft\Windows\Start Menu\Programs");
+        $paths = @();
+        if ($env:ProgramData) {
+            $paths += Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs";
+        } else {
+            $paths += "C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
+        }
         if ($env:APPDATA) {
             $paths += Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs";
         }

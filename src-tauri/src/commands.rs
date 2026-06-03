@@ -67,19 +67,20 @@ pub fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Ve
 
 #[tauri::command]
 pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
-    let apps_cache = if let Ok(cache) = state.apps.lock() {
-        cache.clone()
-    } else {
-        Vec::new()
+    let query_lower = query.to_lowercase().trim().to_string();
+    
+    // Lock and inspect cache directly to eliminate deep cloning on every keystroke
+    let apps_cache = match state.apps.lock() {
+        Ok(cache) => cache,
+        Err(_) => return Vec::new(),
     };
 
-    let query_lower = query.to_lowercase().trim().to_string();
     if query_lower.is_empty() {
-        return apps_cache;
+        return apps_cache.clone();
     }
 
     let mut scored_apps = Vec::new();
-    for app in apps_cache {
+    for app in apps_cache.iter() {
         let name_lower = app.name.to_lowercase();
         let initials_lower = app.pinyin_initials.to_lowercase();
         let full_lower = app.pinyin_full.to_lowercase();
@@ -103,7 +104,7 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
         }
 
         if score > 0 {
-            scored_apps.push((score, app));
+            scored_apps.push((score, app.clone())); // Clone only matched items
         }
     }
 
@@ -113,11 +114,23 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
 }
 
 #[tauri::command]
-pub fn launch_app(path: String) -> Result<(), String> {
+pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let path_buf = std::path::PathBuf::from(&path);
     if !path_buf.exists() {
         return Err(format!("应用文件路径不存在: {}", path));
     }
+    
+    // Security verification: Whitelist execution to only allow files in scanned apps cache
+    let is_whitelisted = if let Ok(apps) = state.apps.lock() {
+        apps.iter().any(|app| app.path == path)
+    } else {
+        false
+    };
+    
+    if !is_whitelisted {
+        return Err("Security Error: Target application is not in the whitelist".to_string());
+    }
+
     open::that(&path).map_err(|e| format!("Failed to launch app: {}", e))
 }
 
@@ -139,6 +152,11 @@ pub fn open_folder(path: String) -> Result<(), String> {
     let path_buf = std::path::PathBuf::from(&resolved);
     if !path_buf.exists() {
         return Err(format!("文件夹路径不存在: {}", resolved));
+    }
+    
+    // Security restriction: Force path to be a directory, preventing EXE execution
+    if !path_buf.is_dir() {
+        return Err("Security Error: The path is not a folder directory".to_string());
     }
 
     open::that(&resolved).map_err(|e| format!("Failed to open folder: {}", e))

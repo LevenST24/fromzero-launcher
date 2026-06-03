@@ -97,6 +97,8 @@ ensureTauri();
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
   if (startSprings) startSprings();
+  const container = document.getElementById("launcher-container");
+  if (container) container.classList.remove("blurred");
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
@@ -106,6 +108,9 @@ window.addEventListener("focus", () => {
 
 window.addEventListener("blur", () => {
   if (stopSprings) stopSprings();
+  const container = document.getElementById("launcher-container");
+  if (container) container.classList.add("blurred");
+  
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
     return;
@@ -208,10 +213,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       let shVx = 0, shVy = 0;
       const shStiffness = 0.12;
       const shDamping = 0.16;
+      let isSpringRunning = false;
 
       function updateSprings() {
         if (!document.getElementById("launcher-container")) {
           springAnimationId = null;
+          isSpringRunning = false;
           return;
         }
 
@@ -223,20 +230,38 @@ window.addEventListener("DOMContentLoaded", async () => {
           targetShY = targetMouseY;
         }
 
+        let needsUpdate = false;
+
         // Update Specular Highlight Spring only
         if (targetShX === -999) {
-          shX = -999;
-          shY = -999;
-          shVx = 0;
-          shVy = 0;
+          if (shX !== -999) {
+            shX = -999;
+            shY = -999;
+            shVx = 0;
+            shVy = 0;
+            needsUpdate = true; // One final frame to write offscreen variables
+          }
         } else {
           if (shX === -999) { shX = targetShX; shY = targetShY; }
-          const ax = (targetShX - shX) * shStiffness;
-          const ay = (targetShY - shY) * shStiffness;
-          shVx = (shVx + ax) * (1 - shDamping);
-          shVy = (shVy + ay) * (1 - shDamping);
-          shX += shVx;
-          shY += shVy;
+          const dx = targetShX - shX;
+          const dy = targetShY - shY;
+          
+          // Only animate if the spring has not settled
+          if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05 || Math.abs(shVx) > 0.05 || Math.abs(shVy) > 0.05) {
+            const ax = dx * shStiffness;
+            const ay = dy * shStiffness;
+            shVx = (shVx + ax) * (1 - shDamping);
+            shVy = (shVy + ay) * (1 - shDamping);
+            shX += shVx;
+            shY += shVy;
+            needsUpdate = true;
+          } else {
+            // Settle exactly to target coordinates
+            shX = targetShX;
+            shY = targetShY;
+            shVx = 0;
+            shVy = 0;
+          }
         }
 
         // Render CSS coordinates for specular highlight
@@ -248,11 +273,17 @@ window.addEventListener("DOMContentLoaded", async () => {
           container.style.setProperty("--my", `${shY}px`);
         }
 
-        springAnimationId = requestAnimationFrame(updateSprings);
+        if (needsUpdate) {
+          springAnimationId = requestAnimationFrame(updateSprings);
+        } else {
+          springAnimationId = null;
+          isSpringRunning = false;
+        }
       }
 
       startSprings = () => {
         if (!springAnimationId) {
+          isSpringRunning = true;
           springAnimationId = requestAnimationFrame(updateSprings);
         }
       };
@@ -276,6 +307,9 @@ window.addEventListener("DOMContentLoaded", async () => {
         targetMouseX = e.clientX - rect.left;
         targetMouseY = e.clientY - rect.top;
         isHovered = true;
+        if (!isSpringRunning) {
+          startSprings();
+        }
       });
 
       container.addEventListener("mouseleave", () => {
@@ -288,10 +322,14 @@ window.addEventListener("DOMContentLoaded", async () => {
         lastShowTime = Date.now();
         if (searchInput) searchInput.focus();
         if (startSprings) startSprings();
+        const container = document.getElementById("launcher-container");
+        if (container) container.classList.remove("blurred");
       });
 
       appWindow.listen("tauri://blur", () => {
         if (stopSprings) stopSprings();
+        const container = document.getElementById("launcher-container");
+        if (container) container.classList.add("blurred");
       });
 
       if (window.__TAURI__.event?.listen) {
@@ -719,7 +757,7 @@ function recordShortcut(e) {
   if (e.metaKey) parts.push("Super");
   const ignoreKeys = ["Control", "Alt", "Shift", "Meta", "CapsLock", "NumLock"];
   const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
-  const isFunctionKey = /^F[1-9][0-2]?$/.test(e.key);
+  const isFunctionKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(e.key);
   if (!hasModifier && !isFunctionKey) return;
   if (!ignoreKeys.includes(e.key)) {
     let keyName = e.key;

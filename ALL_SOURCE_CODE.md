@@ -20,7 +20,7 @@ This document aggregates all production source code files of the **FromZero Laun
 ```toml
 [package]
 name = "fromzero-launcher"
-version = "0.1.0"
+version = "0.1.4"
 description = "A Tauri App"
 authors = ["LevenST"]
 edition = "2021"
@@ -451,19 +451,20 @@ pub fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Ve
 
 #[tauri::command]
 pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
-    let apps_cache = if let Ok(cache) = state.apps.lock() {
-        cache.clone()
-    } else {
-        Vec::new()
+    let query_lower = query.to_lowercase().trim().to_string();
+    
+    // Lock and inspect cache directly to eliminate deep cloning on every keystroke
+    let apps_cache = match state.apps.lock() {
+        Ok(cache) => cache,
+        Err(_) => return Vec::new(),
     };
 
-    let query_lower = query.to_lowercase().trim().to_string();
     if query_lower.is_empty() {
-        return apps_cache;
+        return apps_cache.clone();
     }
 
     let mut scored_apps = Vec::new();
-    for app in apps_cache {
+    for app in apps_cache.iter() {
         let name_lower = app.name.to_lowercase();
         let initials_lower = app.pinyin_initials.to_lowercase();
         let full_lower = app.pinyin_full.to_lowercase();
@@ -487,7 +488,7 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
         }
 
         if score > 0 {
-            scored_apps.push((score, app));
+            scored_apps.push((score, app.clone())); // Clone only matched items
         }
     }
 
@@ -497,11 +498,23 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
 }
 
 #[tauri::command]
-pub fn launch_app(path: String) -> Result<(), String> {
+pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let path_buf = std::path::PathBuf::from(&path);
     if !path_buf.exists() {
         return Err(format!("应用文件路径不存在: {}", path));
     }
+    
+    // Security verification: Whitelist execution to only allow files in scanned apps cache
+    let is_whitelisted = if let Ok(apps) = state.apps.lock() {
+        apps.iter().any(|app| app.path == path)
+    } else {
+        false
+    };
+    
+    if !is_whitelisted {
+        return Err("Security Error: Target application is not in the whitelist".to_string());
+    }
+
     open::that(&path).map_err(|e| format!("Failed to launch app: {}", e))
 }
 
@@ -523,6 +536,11 @@ pub fn open_folder(path: String) -> Result<(), String> {
     let path_buf = std::path::PathBuf::from(&resolved);
     if !path_buf.exists() {
         return Err(format!("文件夹路径不存在: {}", resolved));
+    }
+    
+    // Security restriction: Force path to be a directory, preventing EXE execution
+    if !path_buf.is_dir() {
+        return Err("Security Error: The path is not a folder directory".to_string());
     }
 
     open::that(&resolved).map_err(|e| format!("Failed to open folder: {}", e))
@@ -843,7 +861,12 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
         $OutputEncoding = [System.Text.Encoding]::UTF8;
         $sh = New-Object -ComObject WScript.Shell;
-        $paths = @("C:\ProgramData\Microsoft\Windows\Start Menu\Programs");
+        $paths = @();
+        if ($env:ProgramData) {
+            $paths += Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs";
+        } else {
+            $paths += "C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
+        }
         if ($env:APPDATA) {
             $paths += Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs";
         }
@@ -1093,7 +1116,7 @@ fn run_command_with_timeout(
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FromZero Launcher</title>
     <link rel="stylesheet" href="styles.css" />
-    <script type="module" src="/main.js?v=1" defer></script>
+    <script type="module" src="/main.js?v=1"></script>
   </head>
 
   <body>
@@ -1506,6 +1529,16 @@ body {
   pointer-events: none;
   z-index: 3;
   border-radius: inherit;
+}
+
+/* Disable expensive SVG filter and reflection animations when blurred/hidden to guarantee 0% idle GPU/CPU usage */
+.launcher-container.blurred .liquid-bg {
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.launcher-container.blurred::after {
+  animation: none !important;
 }
 
 [data-theme="light"] .launcher-container {
@@ -2364,6 +2397,8 @@ ensureTauri();
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
   if (startSprings) startSprings();
+  const container = document.getElementById("launcher-container");
+  if (container) container.classList.remove("blurred");
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
@@ -2373,6 +2408,9 @@ window.addEventListener("focus", () => {
 
 window.addEventListener("blur", () => {
   if (stopSprings) stopSprings();
+  const container = document.getElementById("launcher-container");
+  if (container) container.classList.add("blurred");
+  
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
     return;
@@ -2475,10 +2513,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       let shVx = 0, shVy = 0;
       const shStiffness = 0.12;
       const shDamping = 0.16;
+      let isSpringRunning = false;
 
       function updateSprings() {
         if (!document.getElementById("launcher-container")) {
           springAnimationId = null;
+          isSpringRunning = false;
           return;
         }
 
@@ -2490,20 +2530,38 @@ window.addEventListener("DOMContentLoaded", async () => {
           targetShY = targetMouseY;
         }
 
+        let needsUpdate = false;
+
         // Update Specular Highlight Spring only
         if (targetShX === -999) {
-          shX = -999;
-          shY = -999;
-          shVx = 0;
-          shVy = 0;
+          if (shX !== -999) {
+            shX = -999;
+            shY = -999;
+            shVx = 0;
+            shVy = 0;
+            needsUpdate = true; // One final frame to write offscreen variables
+          }
         } else {
           if (shX === -999) { shX = targetShX; shY = targetShY; }
-          const ax = (targetShX - shX) * shStiffness;
-          const ay = (targetShY - shY) * shStiffness;
-          shVx = (shVx + ax) * (1 - shDamping);
-          shVy = (shVy + ay) * (1 - shDamping);
-          shX += shVx;
-          shY += shVy;
+          const dx = targetShX - shX;
+          const dy = targetShY - shY;
+          
+          // Only animate if the spring has not settled
+          if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05 || Math.abs(shVx) > 0.05 || Math.abs(shVy) > 0.05) {
+            const ax = dx * shStiffness;
+            const ay = dy * shStiffness;
+            shVx = (shVx + ax) * (1 - shDamping);
+            shVy = (shVy + ay) * (1 - shDamping);
+            shX += shVx;
+            shY += shVy;
+            needsUpdate = true;
+          } else {
+            // Settle exactly to target coordinates
+            shX = targetShX;
+            shY = targetShY;
+            shVx = 0;
+            shVy = 0;
+          }
         }
 
         // Render CSS coordinates for specular highlight
@@ -2515,11 +2573,17 @@ window.addEventListener("DOMContentLoaded", async () => {
           container.style.setProperty("--my", `${shY}px`);
         }
 
-        springAnimationId = requestAnimationFrame(updateSprings);
+        if (needsUpdate) {
+          springAnimationId = requestAnimationFrame(updateSprings);
+        } else {
+          springAnimationId = null;
+          isSpringRunning = false;
+        }
       }
 
       startSprings = () => {
         if (!springAnimationId) {
+          isSpringRunning = true;
           springAnimationId = requestAnimationFrame(updateSprings);
         }
       };
@@ -2543,6 +2607,9 @@ window.addEventListener("DOMContentLoaded", async () => {
         targetMouseX = e.clientX - rect.left;
         targetMouseY = e.clientY - rect.top;
         isHovered = true;
+        if (!isSpringRunning) {
+          startSprings();
+        }
       });
 
       container.addEventListener("mouseleave", () => {
@@ -2555,10 +2622,14 @@ window.addEventListener("DOMContentLoaded", async () => {
         lastShowTime = Date.now();
         if (searchInput) searchInput.focus();
         if (startSprings) startSprings();
+        const container = document.getElementById("launcher-container");
+        if (container) container.classList.remove("blurred");
       });
 
       appWindow.listen("tauri://blur", () => {
         if (stopSprings) stopSprings();
+        const container = document.getElementById("launcher-container");
+        if (container) container.classList.add("blurred");
       });
 
       if (window.__TAURI__.event?.listen) {
@@ -2930,7 +3001,7 @@ function openSettings() {
   if (autostartToggle) autostartToggle.checked = settings.autostart || false;
 }
 
-function closeSettings() {
+closeSettings = () => {
   if (settingsOverlay) settingsOverlay.classList.remove("active");
   isRecording = false;
   if (recordBtn) {
@@ -2986,7 +3057,7 @@ function recordShortcut(e) {
   if (e.metaKey) parts.push("Super");
   const ignoreKeys = ["Control", "Alt", "Shift", "Meta", "CapsLock", "NumLock"];
   const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
-  const isFunctionKey = /^F[1-9][0-2]?$/.test(e.key);
+  const isFunctionKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(e.key);
   if (!hasModifier && !isFunctionKey) return;
   if (!ignoreKeys.includes(e.key)) {
     let keyName = e.key;

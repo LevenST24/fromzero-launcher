@@ -237,6 +237,16 @@ body {
   border-radius: inherit;
 }
 
+/* Disable expensive SVG filter and reflection animations when blurred/hidden to guarantee 0% idle GPU/CPU usage */
+.launcher-container.blurred .liquid-bg {
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.launcher-container.blurred::after {
+  animation: none !important;
+}
+
 [data-theme="light"] .launcher-container {
   border: 1px solid rgba(255, 255, 255, 0.25);
   box-shadow:
