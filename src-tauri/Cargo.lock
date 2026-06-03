@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "fromzero-launcher"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "open",
  "pinyin",
