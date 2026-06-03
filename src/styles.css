@@ -68,6 +68,10 @@
 }
 
 /* ── Reset ── */
+html {
+  background: transparent;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -97,10 +101,14 @@ body {
    ============================================================ */
 .liquid-bg {
   position: absolute;
-  inset: -10px; /* Expand boundary to hide edge refraction artifacts outside parent clip */
+  inset: 0; /* Reset to 0 to prevent any out-of-bounds bleeding */
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
+  
+  /* Apply clip-path to enforce rounded corners and prevent anti-aliasing artifacts */
+  clip-path: inset(0 round 16px);
+  -webkit-clip-path: inset(0 round 16px);
   
   /* Apply the liquid glass SVG refraction filter to the ambient color layer.
      This creates organic glass-like distortion on the colored orbs.
@@ -172,8 +180,8 @@ body {
   /* No outer border or shadow-stroke */
   border: none;
 
-  /* Pure outer shadow - no border outlines or inset lines at all */
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.25);
+  /* Tighter outer shadow that fades out before reaching the window edge to avoid clipping */
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.20);
 
   animation: glassIn 0.28s var(--ease-smooth);
 }
@@ -184,9 +192,13 @@ body {
    adds the frosted/milky quality and slight saturation boost. */
 .glass-blur-layer {
   position: absolute;
-  inset: -15px; /* Overexpand backdrop-filter boundary to push edge blur artifacts outside parent overflow: hidden */
+  inset: 0; /* Reset to 0 to prevent any out-of-bounds bleeding */
   z-index: 1;
   pointer-events: none;
+  
+  /* Apply clip-path to force precise backdrop-filter corner rendering and eliminate the 1px outline bug */
+  clip-path: inset(0 round 16px);
+  -webkit-clip-path: inset(0 round 16px);
   
   /* Semi-transparent tint */
   background: var(--glass-bg);
@@ -243,7 +255,7 @@ body {
 
 [data-theme="light"] .launcher-container {
   border: none;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.10);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="light"] .glass-blur-layer {
