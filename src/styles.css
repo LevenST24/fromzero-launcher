@@ -97,11 +97,10 @@ body {
    ============================================================ */
 .liquid-bg {
   position: absolute;
-  inset: 0;
+  inset: -10px; /* Expand boundary to hide edge refraction artifacts outside parent clip */
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  border-radius: inherit;
   
   /* Apply the liquid glass SVG refraction filter to the ambient color layer.
      This creates organic glass-like distortion on the colored orbs.
@@ -173,11 +172,8 @@ body {
   /* No outer border or shadow-stroke */
   border: none;
 
-  /* Beveled glass depth via inset shadows */
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.30),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  /* Pure outer shadow - no border outlines or inset lines at all */
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.25);
 
   animation: glassIn 0.28s var(--ease-smooth);
 }
@@ -188,10 +184,9 @@ body {
    adds the frosted/milky quality and slight saturation boost. */
 .glass-blur-layer {
   position: absolute;
-  inset: 0;
+  inset: -15px; /* Overexpand backdrop-filter boundary to push edge blur artifacts outside parent overflow: hidden */
   z-index: 1;
   pointer-events: none;
-  border-radius: inherit;
   
   /* Semi-transparent tint */
   background: var(--glass-bg);
@@ -248,10 +243,7 @@ body {
 
 [data-theme="light"] .launcher-container {
   border: none;
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.10),
-    inset 0 1px 0 rgba(255, 255, 255, 0.50),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.04);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.10);
 }
 
 [data-theme="light"] .glass-blur-layer {
