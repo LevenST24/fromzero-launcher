@@ -227,28 +227,37 @@ function generateDisplacementMap(width, height, borderRadius, edgeWidthParam, di
       const sdfValue = sdRoundBox(x, y, width, height, r);
       const dist = Math.abs(sdfValue);
 
-      if (dist < edgeWidth) {
-        // Edge zone — compute displacement direction (perpendicular outward)
-        const t = Math.max(0, 1 - dist / edgeWidth); // 1 at edge, 0 at edgeWidth
-        const smoothT = t * t * (3 - 2 * t); // smoothstep
+      // 1. Calculate displacement (R & G channels)
+      let dispX = 0.5;
+      let dispY = 0.5;
 
+      if (dist < edgeWidth) {
+        const t = Math.max(0, 1 - dist / edgeWidth);
+        const smoothT = t * t * (3 - 2 * t); // smoothstep
         const normal = getRoundBoxNormal(x, y, width, height, r);
 
-        // Encode as 0-255 (0.5 = neutral, <0.5 = left/up, >0.5 = right/down)
-        const dispX = 0.5 - normal.x * displacementStrength * smoothT;
-        const dispY = 0.5 - normal.y * displacementStrength * smoothT;
-
-        pixels[pi] = Math.round(dispX * 255);     // R channel → X displacement
-        pixels[pi + 1] = Math.round(dispY * 255); // G channel → Y displacement
-        pixels[pi + 2] = 128;                       // B channel (unused, neutral)
-        pixels[pi + 3] = Math.round(smoothT * 255); // Alpha transitions smoothly from 255 to 0
-      } else {
-        // Interior — neutral (no displacement, transparent)
-        pixels[pi] = 128;
-        pixels[pi + 1] = 128;
-        pixels[pi + 2] = 128;
-        pixels[pi + 3] = 0; // Alpha is 0 in the center
+        // Subtract normal to refract inward (avoiding out-of-bounds sampling)
+        dispX = 0.5 - normal.x * displacementStrength * smoothT;
+        dispY = 0.5 - normal.y * displacementStrength * smoothT;
       }
+
+      pixels[pi] = Math.round(dispX * 255);     // R channel
+      pixels[pi + 1] = Math.round(dispY * 255); // G channel
+      pixels[pi + 2] = 128;                       // B channel (neutral)
+
+      // 2. Calculate antialiased rounded mask (Alpha channel)
+      // sdfValue is negative inside, positive outside the rounded rectangle.
+      // We want a smooth transition from 255 (inside) to 0 (outside) at the boundary.
+      let alpha = 0;
+      if (sdfValue < -1.0) {
+        alpha = 255;
+      } else if (sdfValue > 1.0) {
+        alpha = 0;
+      } else {
+        // Linear transition over a 2px boundary (-1.0 to 1.0)
+        alpha = Math.round((1.0 - sdfValue) / 2.0 * 255);
+      }
+      pixels[pi + 3] = alpha;
     }
   }
 
@@ -278,19 +287,37 @@ function applyVisualSettings(config) {
     dispMaps[1].setAttribute("scale", Math.max(0, s - 4));
     dispMaps[2].setAttribute("scale", Math.max(0, s - 8));
   }
+
+  // Update SVG feGaussianBlur stdDeviation attribute in real time
+  const glassBlurFilter = document.getElementById("glass-blur-filter");
+  if (glassBlurFilter) {
+    glassBlurFilter.setAttribute("stdDeviation", config.glassBlur);
+  }
 }
 
 // Helper: Fetch background Base64 image from Rust state and update style
 async function updateRefractionBackground() {
+  const container = document.getElementById("launcher-container");
   try {
     const base64 = await invoke("get_background");
     const refractionBg = document.getElementById("refraction-bg");
-    if (refractionBg && base64) {
+    if (refractionBg && base64 && base64.trim() !== "") {
       refractionBg.style.backgroundImage = `url("${base64}")`;
+      if (container) {
+        container.classList.remove("no-refraction");
+      }
       console.log("[FromZero] ✓ Refraction background updated");
+    } else {
+      if (container) {
+        container.classList.add("no-refraction");
+      }
+      console.warn("[FromZero] Captured background is empty, using fallback");
     }
   } catch (e) {
-    console.warn("[FromZero] Failed to get captured background:", e);
+    if (container) {
+      container.classList.add("no-refraction");
+    }
+    console.warn("[FromZero] Failed to get captured background, using fallback:", e);
   }
 }
 

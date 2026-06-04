@@ -12,35 +12,39 @@
     <!-- Apple-style Liquid Glass SVG Filter (ported from rdev/liquid-glass-react) -->
     <svg class="svg-filters" style="position: absolute; width: 0; height: 0; pointer-events: none;" aria-hidden="true">
       <defs>
-        <filter id="liquid-glass-filter" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
-          <!-- 1. Load pre-baked displacement map (SDF-based edge displacement) -->
+        <!-- Expanded region to 180% to accommodate up to 60px stdDeviation blur without clipping -->
+        <filter id="liquid-glass-filter" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+          <!-- 1. Load pre-baked displacement map (SDF-based edge displacement)
+               NOTE: The width/height must match the window dimensions (640x450) and be updated if the window size changes. -->
           <feImage id="displacement-map-image" width="640" height="450" result="displacementMap" preserveAspectRatio="none" />
 
-          <!-- 2. Chromatic aberration: displace R, G, B channels independently -->
-          <feDisplacementMap in="SourceGraphic" in2="displacementMap" scale="70" xChannelSelector="R" yChannelSelector="G" result="displacedR" />
+          <!-- 2. Perform background blur inside SVG using edgeMode="duplicate" to prevent boundary seams -->
+          <feGaussianBlur in="SourceGraphic" id="glass-blur-filter" stdDeviation="24" edgeMode="duplicate" result="blurredBG" />
+
+          <!-- 3. Chromatic aberration: displace R, G, B channels of blurredBG independently -->
+          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="70" xChannelSelector="R" yChannelSelector="G" result="displacedR" />
           <feColorMatrix in="displacedR" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
 
-          <feDisplacementMap in="SourceGraphic" in2="displacementMap" scale="66" xChannelSelector="R" yChannelSelector="G" result="displacedG" />
+          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="66" xChannelSelector="R" yChannelSelector="G" result="displacedG" />
           <feColorMatrix in="displacedG" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
 
-          <feDisplacementMap in="SourceGraphic" in2="displacementMap" scale="62" xChannelSelector="R" yChannelSelector="G" result="displacedB" />
+          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="62" xChannelSelector="R" yChannelSelector="G" result="displacedB" />
           <feColorMatrix in="displacedB" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
 
-          <!-- 3. Composite the color-separated channels back together -->
+          <!-- 4. Composite the color-separated channels back together -->
           <feBlend in="r" in2="g" mode="screen" result="rg" />
           <feBlend in="rg" in2="b" mode="screen" result="chromaticResult" />
 
-          <!-- 4. Soften the chromatic aberration -->
+          <!-- 5. Soften the chromatic aberration -->
           <feGaussianBlur in="chromaticResult" stdDeviation="0.5" result="softenedChromatic" />
 
-          <!-- 5. Apply smooth edge mask directly using displacementMap's alpha channel -->
-          <feComposite in="softenedChromatic" in2="displacementMap" operator="in" result="edgeDisplaced" />
-          <feComposite in="edgeDisplaced" in2="SourceGraphic" operator="over" />
+          <!-- 6. Mask the entire final output with the displacement map's alpha channel to clip to rounded corners -->
+          <feComposite in="softenedChromatic" in2="displacementMap" operator="in" />
         </filter>
       </defs>
     </svg>
 
-    <div class="launcher-container" id="launcher-container">
+    <div class="launcher-container no-refraction" id="launcher-container">
       <!-- Background ambient orbs -->
       <div class="liquid-bg">
         <div class="orb orb-1"></div>
