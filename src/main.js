@@ -235,8 +235,8 @@ function generateDisplacementMap(width, height, borderRadius, edgeWidthParam, di
         const normal = getRoundBoxNormal(x, y, width, height, r);
 
         // Encode as 0-255 (0.5 = neutral, <0.5 = left/up, >0.5 = right/down)
-        const dispX = 0.5 + normal.x * displacementStrength * smoothT;
-        const dispY = 0.5 + normal.y * displacementStrength * smoothT;
+        const dispX = 0.5 - normal.x * displacementStrength * smoothT;
+        const dispY = 0.5 - normal.y * displacementStrength * smoothT;
 
         pixels[pi] = Math.round(dispX * 255);     // R channel → X displacement
         pixels[pi + 1] = Math.round(dispY * 255); // G channel → Y displacement

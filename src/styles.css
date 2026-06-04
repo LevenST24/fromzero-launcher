@@ -84,7 +84,10 @@ body {
   overflow: hidden;
   background: transparent;
   color: var(--text-primary);
-  box-shadow: 0 0 0 0.5px var(--border-subtle);
+  box-shadow:
+    0 0 0 0.5px var(--border-subtle),
+    0 8px 32px var(--shadow-color),
+    0 2px 8px rgba(0, 0, 0, 0.2);
   /* Force GPU rendering composite layers context for correct rounded corner clipping */
   transform: translate3d(0, 0, 0);
   will-change: transform;
