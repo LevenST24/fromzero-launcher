@@ -15,8 +15,9 @@
         <!-- Expanded region to 180% to accommodate up to 60px stdDeviation blur without clipping -->
         <filter id="liquid-glass-filter" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
           <!-- 1. Load pre-baked displacement map (SDF-based edge displacement)
-               NOTE: The width/height must match the window dimensions (640x450) and be updated if the window size changes. -->
-          <feImage id="displacement-map-image" width="640" height="450" result="displacementMap" preserveAspectRatio="none" />
+               NOTE: The width/height must match the window dimensions (640x450).
+               Positioned at x="60" y="60" to align with the expanded refraction-bg element. -->
+          <feImage id="displacement-map-image" x="60" y="60" width="640" height="450" result="displacementMap" preserveAspectRatio="none" />
 
           <!-- 2. Perform background blur inside SVG using edgeMode="duplicate" to prevent boundary seams -->
           <feGaussianBlur in="SourceGraphic" id="glass-blur-filter" stdDeviation="24" edgeMode="duplicate" result="blurredBG" />
