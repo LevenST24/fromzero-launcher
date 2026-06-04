@@ -48,6 +48,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = commands::capture_background_before_show(app);
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -65,6 +66,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     if visible {
                         let _ = window.hide();
                     } else {
+                        let _ = commands::capture_background_before_show(app);
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -95,6 +97,7 @@ pub fn run() {
             apps: Mutex::new(Vec::new()),
             settings_lock: Mutex::new(()),
             tray: Mutex::new(None),
+            captured_background: Mutex::new(String::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
@@ -107,6 +110,7 @@ pub fn run() {
             commands::open_search,
             commands::execute_sys_command,
             commands::debug_log,
+            commands::get_background,
         ])
         .setup(|app| {
             let Some(window) = app.get_webview_window("main") else {

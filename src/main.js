@@ -17,7 +17,7 @@ if (window.__TAURI__) {
   invoke = async (cmd, args) => {
     console.log(`[Mock Invoke] ${cmd}`, args);
     if (cmd === "get_settings") {
-      return { shortcut: "Alt+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [], autostart: false };
+      return { shortcut: "Ctrl+Space", theme: "dark", web_engines: { g: "https://google.com/search?q={}" }, recent_apps: [], autostart: false };
     }
     if (cmd === "scan_apps") return [];
     if (cmd === "search_apps") return [];
@@ -41,6 +41,17 @@ let appItems = [];
 let filteredItems = [];
 let selectedIndex = 0;
 let settings = {};
+
+// Liquid Glass customizable parameters
+let glassSettings = {
+  glassBlur: 24,
+  dispScale: 70,
+  dispEdge: 20,
+  dispStrength: 0.45,
+  specularOpacity: 0.60,
+  borderOpacity: 0.60
+};
+let backupGlassSettings = null;
 
 // Search debounce and query race condition tracking
 let lastSearchId = 0;
@@ -71,6 +82,10 @@ const shortcutDisplay = document.getElementById("shortcut-display");
 const recordBtn = document.getElementById("record-btn");
 const themeSelect = document.getElementById("theme-select");
 const autostartToggle = document.getElementById("autostart-toggle");
+const tabBtnGeneral = document.getElementById("tab-btn-general");
+const tabBtnGlass = document.getElementById("tab-btn-glass");
+const panelGeneral = document.getElementById("panel-general");
+const panelGlass = document.getElementById("panel-glass");
 
 const appWindow = getCurrentWindow();
 
@@ -93,6 +108,7 @@ let stopSprings = null;
 
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
+  updateRefractionBackground();
   if (startSprings) startSprings();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.remove("blurred");
@@ -146,6 +162,225 @@ function clearChildren(el) {
 }
 
 // =============================================
+// Generate Displacement Map via Canvas
+// Creates an SDF-based edge displacement map for the SVG feDisplacementMap filter.
+// Pixels near edges have non-neutral (0.5, 0.5) values → displacement.
+// Center pixels are neutral → no distortion.
+// This is ported from rdev/liquid-glass-react's shader-utils.
+// =============================================
+function generateDisplacementMap(width, height, borderRadius, edgeWidthParam, displacementStrengthParam) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+
+  const r = borderRadius;
+  const edgeWidth = edgeWidthParam || 20; // pixels from edge where displacement is visible
+  const displacementStrength = displacementStrengthParam !== undefined ? displacementStrengthParam : 0.45; // max displacement as fraction of 0.5 range
+
+  const imageData = ctx.createImageData(width, height);
+  const pixels = imageData.data;
+
+  // Helper: Inigo Quilez Rounded Box SDF
+  function sdRoundBox(x, y, w, h, radius) {
+    const px = x - w / 2;
+    const py = y - h / 2;
+    const qx = Math.abs(px) - w / 2 + radius;
+    const qy = Math.abs(py) - h / 2 + radius;
+    const maxQ = Math.max(qx, qy);
+    const minPart = Math.min(maxQ, 0.0);
+    const maxQx0 = Math.max(qx, 0.0);
+    const maxQy0 = Math.max(qy, 0.0);
+    const lenPart = Math.sqrt(maxQx0 * maxQx0 + maxQy0 * maxQy0);
+    return minPart + lenPart - radius;
+  }
+
+  // Helper: Normal pointing outward
+  function getRoundBoxNormal(x, y, w, h, radius) {
+    const px = x - w / 2;
+    const py = y - h / 2;
+    const signX = px >= 0 ? 1 : -1;
+    const signY = py >= 0 ? 1 : -1;
+    const qx = Math.abs(px) - w / 2 + radius;
+    const qy = Math.abs(py) - h / 2 + radius;
+
+    if (qx > 0 || qy > 0) {
+      const qxPlus = Math.max(qx, 0);
+      const qyPlus = Math.max(qy, 0);
+      const len = Math.sqrt(qxPlus * qxPlus + qyPlus * qyPlus) || 1;
+      return {
+        x: (qxPlus / len) * signX,
+        y: (qyPlus / len) * signY
+      };
+    } else {
+      if (qx > qy) {
+        return { x: signX, y: 0 };
+      } else {
+        return { x: 0, y: signY };
+      }
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pi = (y * width + x) * 4;
+      const sdfValue = sdRoundBox(x, y, width, height, r);
+      const dist = Math.abs(sdfValue);
+
+      if (dist < edgeWidth) {
+        // Edge zone — compute displacement direction (perpendicular outward)
+        const t = Math.max(0, 1 - dist / edgeWidth); // 1 at edge, 0 at edgeWidth
+        const smoothT = t * t * (3 - 2 * t); // smoothstep
+
+        const normal = getRoundBoxNormal(x, y, width, height, r);
+
+        // Encode as 0-255 (0.5 = neutral, <0.5 = left/up, >0.5 = right/down)
+        const dispX = 0.5 + normal.x * displacementStrength * smoothT;
+        const dispY = 0.5 + normal.y * displacementStrength * smoothT;
+
+        pixels[pi] = Math.round(dispX * 255);     // R channel → X displacement
+        pixels[pi + 1] = Math.round(dispY * 255); // G channel → Y displacement
+        pixels[pi + 2] = 128;                       // B channel (unused, neutral)
+        pixels[pi + 3] = Math.round(smoothT * 255); // Alpha transitions smoothly from 255 to 0
+      } else {
+        // Interior — neutral (no displacement, transparent)
+        pixels[pi] = 128;
+        pixels[pi + 1] = 128;
+        pixels[pi + 2] = 128;
+        pixels[pi + 3] = 0; // Alpha is 0 in the center
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+// Helper: Apply visual configurations to DOM/CSS and SVG filter scales in real time
+function applyVisualSettings(config) {
+  const container = document.getElementById("launcher-container");
+  if (!container) return;
+
+  container.style.setProperty("--glass-blur", `${config.glassBlur}px`);
+  container.style.setProperty("--specular-opacity", config.specularOpacity);
+
+  // Border opacities are scaled based on the single borderOpacity slider value
+  const b1 = (config.borderOpacity * 0.3).toFixed(3);
+  const b2 = (config.borderOpacity * 0.2).toFixed(3);
+  container.style.setProperty("--border1-opacity", b1);
+  container.style.setProperty("--border2-opacity", b2);
+
+  // Update SVG feDisplacementMap scale attribute in real time
+  const dispMaps = document.querySelectorAll("feDisplacementMap");
+  if (dispMaps.length >= 3) {
+    const s = config.dispScale;
+    dispMaps[0].setAttribute("scale", Math.max(0, s));
+    dispMaps[1].setAttribute("scale", Math.max(0, s - 4));
+    dispMaps[2].setAttribute("scale", Math.max(0, s - 8));
+  }
+}
+
+// Helper: Fetch background Base64 image from Rust state and update style
+async function updateRefractionBackground() {
+  try {
+    const base64 = await invoke("get_background");
+    const refractionBg = document.getElementById("refraction-bg");
+    if (refractionBg && base64) {
+      refractionBg.style.backgroundImage = `url("${base64}")`;
+      console.log("[FromZero] ✓ Refraction background updated");
+    }
+  } catch (e) {
+    console.warn("[FromZero] Failed to get captured background:", e);
+  }
+}
+
+// Helper: Debounce displacement map regeneration during slider moves to ensure 60fps fluidity
+let canvasDebounceTimeout = null;
+function triggerCanvasRegen(edgeVal, strengthVal) {
+  clearTimeout(canvasDebounceTimeout);
+  canvasDebounceTimeout = setTimeout(() => {
+    try {
+      const feImageEl = document.getElementById("displacement-map-image");
+      if (feImageEl) {
+        const mapCanvas = generateDisplacementMap(640, 450, 16, edgeVal, strengthVal);
+        feImageEl.setAttribute("href", mapCanvas.toDataURL("image/png"));
+        console.log("[FromZero] ✓ Displacement map updated live");
+      }
+    } catch (e) {
+      console.warn("Canvas regeneration error:", e);
+    }
+  }, 40);
+}
+
+// Helper: Initialize sliders listeners
+function initSliderListeners() {
+  const sliders = [
+    { id: "slider-glass-blur", valId: "val-glass-blur", key: "glassBlur", isFloat: false },
+    { id: "slider-disp-scale", valId: "val-disp-scale", key: "dispScale", isFloat: false },
+    { id: "slider-disp-edge", valId: "val-disp-edge", key: "dispEdge", isFloat: false, triggerCanvas: true },
+    { id: "slider-disp-strength", valId: "val-disp-strength", key: "dispStrength", isFloat: true, triggerCanvas: true },
+    { id: "slider-specular-opacity", valId: "val-specular-opacity", key: "specularOpacity", isFloat: true },
+    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true }
+  ];
+
+  sliders.forEach(s => {
+    const el = document.getElementById(s.id);
+    const valEl = document.getElementById(s.valId);
+    if (el) {
+      el.addEventListener("input", () => {
+        const val = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
+        if (valEl) {
+          valEl.textContent = s.isFloat ? val.toFixed(2) : val;
+        }
+
+        // Apply sliders state immediately for live feedback
+        const currentConfig = readSlidersState();
+        applyVisualSettings(currentConfig);
+
+        if (s.triggerCanvas) {
+          triggerCanvasRegen(currentConfig.dispEdge, currentConfig.dispStrength);
+        }
+      });
+    }
+  });
+}
+
+// Helper: Read sliders values
+function readSlidersState() {
+  return {
+    glassBlur: parseInt(document.getElementById("slider-glass-blur").value),
+    dispScale: parseInt(document.getElementById("slider-disp-scale").value),
+    dispEdge: parseInt(document.getElementById("slider-disp-edge").value),
+    dispStrength: parseFloat(document.getElementById("slider-disp-strength").value),
+    specularOpacity: parseFloat(document.getElementById("slider-specular-opacity").value),
+    borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value)
+  };
+}
+
+// Helper: Sync sliders elements to configurations
+function syncSlidersToConfig(config) {
+  const mappings = [
+    { id: "slider-glass-blur", valId: "val-glass-blur", val: config.glassBlur, isFloat: false },
+    { id: "slider-disp-scale", valId: "val-disp-scale", val: config.dispScale, isFloat: false },
+    { id: "slider-disp-edge", valId: "val-disp-edge", val: config.dispEdge, isFloat: false },
+    { id: "slider-disp-strength", valId: "val-disp-strength", val: config.dispStrength, isFloat: true },
+    { id: "slider-specular-opacity", valId: "val-specular-opacity", val: config.specularOpacity, isFloat: true },
+    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true }
+  ];
+
+  mappings.forEach(m => {
+    const el = document.getElementById(m.id);
+    const valEl = document.getElementById(m.valId);
+    if (el) {
+      el.value = m.val;
+      if (valEl) {
+        valEl.textContent = m.isFloat ? m.val.toFixed(2) : m.val;
+      }
+    }
+  });
+}
+
+// =============================================
 // Initialize application
 // =============================================
 window.addEventListener("DOMContentLoaded", async () => {
@@ -162,8 +397,20 @@ window.addEventListener("DOMContentLoaded", async () => {
       settings = {};
     }
 
+    // Load Liquid Glass parameters from localStorage
+    try {
+      const stored = localStorage.getItem("fromzero-liquid-glass");
+      if (stored) {
+        glassSettings = { ...glassSettings, ...JSON.parse(stored) };
+      }
+    } catch (e) {
+      console.warn("Failed to load local glass settings:", e);
+    }
+    applyVisualSettings(glassSettings);
+    updateRefractionBackground();
+
     applyTheme(settings.theme);
-    if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Alt+Space";
+    if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Ctrl+Space";
     if (themeSelect) themeSelect.value = settings.theme || "dark";
 
     if (footerStatus) footerStatus.textContent = "正在扫描开始菜单...";
@@ -209,15 +456,37 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (settingsCancel) settingsCancel.addEventListener("click", closeSettings);
     if (settingsSave) settingsSave.addEventListener("click", saveSettingsConfig);
 
+    if (tabBtnGeneral) tabBtnGeneral.addEventListener("click", () => switchTab("general"));
+    if (tabBtnGlass) tabBtnGlass.addEventListener("click", () => switchTab("glass"));
+
     if (recordBtn) recordBtn.addEventListener("click", toggleRecordingShortcut);
 
+    // Register visual sliders change events
+    initSliderListeners();
+
     // =============================================
-    // Specular Highlight — cursor-following light spot (Liquid Glass)
-    // NO refractive drift / NO wave effect
+    // Displacement Map Initialization
+    // Load pre-baked displacement map data into SVG feImage
+    // =============================================
+    try {
+      // The displacement map is a PNG base64 data URL stored inline
+      const feImageEl = document.getElementById("displacement-map-image");
+      if (feImageEl) {
+        // Generate the displacement map via Canvas (SDF-based edge displacement)
+        const mapCanvas = generateDisplacementMap(640, 450, 16, glassSettings.dispEdge, glassSettings.dispStrength);
+        feImageEl.setAttribute("href", mapCanvas.toDataURL("image/png"));
+        console.log("[FromZero] ✓ Displacement map generated and loaded");
+      }
+    } catch (e) {
+      console.warn("[FromZero] Displacement map init failed, refraction disabled:", e);
+    }
+
+    // =============================================
+    // Specular Highlight + Border Highlight — cursor-following light
     // =============================================
     const container = document.getElementById("launcher-container");
     if (container) {
-      // Spring state for specular highlight only
+      // Spring state for specular highlight + border highlight
       let targetMouseX = 0;
       let targetMouseY = 0;
       let isHovered = false;
@@ -228,6 +497,10 @@ window.addEventListener("DOMContentLoaded", async () => {
       const shStiffness = 0.12;
       const shDamping = 0.16;
       let isSpringRunning = false;
+
+      // Border highlight angle (smooth interpolation, no spring needed)
+      let currentBorderAngle = 135;
+      let targetBorderAngle = 135;
 
       function updateSprings() {
         if (!document.getElementById("launcher-container")) {
@@ -287,6 +560,13 @@ window.addEventListener("DOMContentLoaded", async () => {
           container.style.setProperty("--my", `${shY}px`);
         }
 
+        // Update border highlight angle (smooth interpolation)
+        const angleDiff = targetBorderAngle - currentBorderAngle;
+        if (Math.abs(angleDiff) > 0.1) {
+          currentBorderAngle += angleDiff * 0.08;
+          container.style.setProperty("--border-angle", `${currentBorderAngle}deg`);
+        }
+
         if (needsUpdate) {
           springAnimationId = requestAnimationFrame(updateSprings);
         } else {
@@ -321,6 +601,15 @@ window.addEventListener("DOMContentLoaded", async () => {
         targetMouseX = e.clientX - rect.left;
         targetMouseY = e.clientY - rect.top;
         isHovered = true;
+
+        // Calculate border highlight angle based on cursor position relative to center
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const dx = targetMouseX - cx;
+        const dy = targetMouseY - cy;
+        // Convert to angle (0-360), offset so top-left is default
+        targetBorderAngle = (Math.atan2(dy, dx) * 180 / Math.PI + 360 + 90) % 360;
+
         if (!isSpringRunning) {
           startSprings();
         }
@@ -333,6 +622,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     appWindow.listen("tauri://focus", () => {
       lastShowTime = Date.now();
+      updateRefractionBackground();
       if (searchInput) searchInput.focus();
       if (startSprings) startSprings();
       const container = document.getElementById("launcher-container");
@@ -645,11 +935,7 @@ async function executeItemAction(item) {
 }
 
 async function handleGlobalKeys(e) {
-  if (isRecording) {
-    e.preventDefault();
-    recordShortcut(e);
-    return;
-  }
+  // Shortcut recording is handled by a dedicated document-level keydown listener
   if (settingsOverlay && settingsOverlay.classList.contains("active")) {
     if (e.key === "Escape") closeSettings();
     return;
@@ -707,11 +993,32 @@ function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
 }
 
+function switchTab(tab) {
+  if (tab === "general") {
+    if (tabBtnGeneral) tabBtnGeneral.classList.add("active");
+    if (tabBtnGlass) tabBtnGlass.classList.remove("active");
+    if (panelGeneral) panelGeneral.classList.add("active");
+    if (panelGlass) panelGlass.classList.remove("active");
+  } else if (tab === "glass") {
+    if (tabBtnGeneral) tabBtnGeneral.classList.remove("active");
+    if (tabBtnGlass) tabBtnGlass.classList.add("active");
+    if (panelGeneral) panelGeneral.classList.remove("active");
+    if (panelGlass) panelGlass.classList.add("active");
+  }
+}
+
 function openSettings() {
+  switchTab("general");
   if (settingsOverlay) settingsOverlay.classList.add("active");
   if (themeSelect) themeSelect.value = settings.theme || "dark";
-  if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Alt+Space";
+  if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Ctrl+Space";
   if (autostartToggle) autostartToggle.checked = settings.autostart || false;
+
+  // Back up settings in case of user cancel
+  backupGlassSettings = { ...glassSettings };
+
+  // Set sliders value to current config
+  syncSlidersToConfig(glassSettings);
 }
 
 function closeSettings() {
@@ -721,22 +1028,38 @@ function closeSettings() {
     recordBtn.textContent = "录制组合键";
     recordBtn.className = "record-btn";
   }
+
+  // Restore backed up visual parameters if canceled
+  if (backupGlassSettings) {
+    applyVisualSettings(backupGlassSettings);
+    triggerCanvasRegen(backupGlassSettings.dispEdge, backupGlassSettings.dispStrength);
+    backupGlassSettings = null;
+  }
+
   if (searchInput) searchInput.focus();
 }
 
 async function saveSettingsConfig() {
-  // Collect UI values first
   if (themeSelect) settings.theme = themeSelect.value;
   if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
   if (autostartToggle) settings.autostart = autostartToggle.checked;
   applyTheme(settings.theme);
 
-  // Close settings panel immediately — user expectation: save = done
+  // Commit glass settings
+  glassSettings = readSlidersState();
+  try {
+    localStorage.setItem("fromzero-liquid-glass", JSON.stringify(glassSettings));
+  } catch (e) {
+    console.warn("Failed to save glass settings to localStorage:", e);
+  }
+
+  // Clean backup so closeSettings does not revert them
+  backupGlassSettings = null;
+
   closeSettings();
 
   try {
     await invoke("update_settings", { settings });
-    // Auto-hide window after saving — back to work
     try {
       await appWindow.hide();
     } catch (e) {
@@ -756,6 +1079,10 @@ function toggleRecordingShortcut() {
       recordBtn.textContent = "请按下按键...";
       recordBtn.classList.add("recording");
     }
+    // Blur any focused element so keyboard events reach window/document reliably
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
   } else {
     if (recordBtn) {
       recordBtn.textContent = "录制组合键";
@@ -763,6 +1090,16 @@ function toggleRecordingShortcut() {
     }
   }
 }
+
+// Dedicated keydown listener for shortcut recording at document level
+// (separate from handleGlobalKeys which is on window and may miss events
+//  when focus is inside the modal overlay)
+document.addEventListener("keydown", (e) => {
+  if (!isRecording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  recordShortcut(e);
+});
 
 document.addEventListener("mousedown", (e) => {
   if (isRecording && recordBtn && e.target !== recordBtn) {
@@ -776,10 +1113,18 @@ function recordShortcut(e) {
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
   if (e.metaKey) parts.push("Super");
+
   const ignoreKeys = ["Control", "Alt", "Shift", "Meta", "CapsLock", "NumLock"];
   const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
   const isFunctionKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(e.key);
-  if (!hasModifier && !isFunctionKey) return;
+
+  // Global hotkeys require at least one modifier key (Ctrl/Alt/Shift/Win) or a function key (F1-F24).
+  // Combinations like "X+Space" cannot be registered as OS-level global hotkeys.
+  if (!hasModifier && !isFunctionKey) {
+    if (shortcutDisplay) shortcutDisplay.textContent = "需要修饰键 (Ctrl/Alt/Shift) 或 F1-F24";
+    return;
+  }
+
   if (!ignoreKeys.includes(e.key)) {
     let keyName = e.key;
     if (keyName === " ") keyName = "Space";
@@ -791,6 +1136,7 @@ function recordShortcut(e) {
     else if (keyName.length === 1) keyName = keyName.toUpperCase();
     parts.push(keyName);
   }
+
   if (parts.length > 0 && !ignoreKeys.includes(e.key)) {
     if (shortcutDisplay) shortcutDisplay.textContent = parts.join("+");
     toggleRecordingShortcut();

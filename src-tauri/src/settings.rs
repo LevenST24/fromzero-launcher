@@ -8,8 +8,7 @@ use tauri::Manager;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
     #[serde(default = "default_shortcut")]
-    pub shortcut: String,
-    #[serde(default = "default_theme")]
+    pub shortcut: String,    #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_web_engines")]
     pub web_engines: HashMap<String, String>,
@@ -20,7 +19,7 @@ pub struct Settings {
 }
 
 fn default_shortcut() -> String {
-    "Alt+Space".to_string()
+    "Ctrl+Space".to_string()
 }
 
 fn default_theme() -> String {
