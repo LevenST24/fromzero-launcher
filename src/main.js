@@ -6,7 +6,10 @@ let invoke, getCurrentWindow, listen, convertFileSrc;
 if (window.__TAURI__) {
   invoke = window.__TAURI__.core.invoke;
   getCurrentWindow = window.__TAURI__.window.getCurrentWindow;
-  listen = window.__TAURI__.event ? window.__TAURI__.event.listen : getCurrentWindow().listen;
+  const currentWin = getCurrentWindow();
+  listen = window.__TAURI__.event
+    ? window.__TAURI__.event.listen.bind(window.__TAURI__.event)
+    : currentWin.listen.bind(currentWin);
   convertFileSrc = window.__TAURI__.core.convertFileSrc;
   
   // Safe cleanup: delete the global window.__TAURI__ object to protect against XSS command injections
@@ -319,6 +322,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       });
       searchInput.addEventListener("compositionend", () => {
         isComposing = false;
+        clearTimeout(searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(() => {
+          searchDebounceTimeout = null;
+          handleSearch();
+        }, 100);
       });
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
@@ -348,18 +356,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     // =============================================
     // Tauri window event listeners
     // =============================================
-    appWindow.listen("tauri://focus", () => {
-      lastShowTime = Date.now();
-      if (searchInput) searchInput.focus();
-      const container = document.getElementById("launcher-container");
-      if (container) container.classList.remove("blurred");
-    });
-
-    appWindow.listen("tauri://blur", () => {
-      const container = document.getElementById("launcher-container");
-      if (container) container.classList.add("blurred");
-    });
-
     listen("icon-ready", (event) => {
       const appPath = event.payload;
       const recentCard = Array.from(document.querySelectorAll(".recent-card"))
@@ -427,7 +423,7 @@ function renderRecentApps() {
 }
 
 function createIconElement(iconPath, cssClass) {
-  if (!iconPath || /^[\u{1F300}-\u{1FAF8}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}⚡📂🌐📁🖼️📝💻📦📄🎵🎬]/u.test(iconPath)) {
+  if (!iconPath || /^[\u{2190}-\u{21FF}\u{1F300}-\u{1FAF8}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}⚡📂🌐📁🖼️📝💻📦📄🎵🎬]/u.test(iconPath)) {
     const span = document.createElement("span");
     span.className = (cssClass || "") + " emoji";
     span.textContent = iconPath || "📱";
@@ -534,10 +530,10 @@ async function handleSearch() {
         searchInDir = possibleFilter;
       }
     }
-    currentDirPath = parentDir;
     try {
       const files = await invoke("list_directory", { path: parentDir, searchTerm: searchInDir });
       if (currentSearchId !== lastSearchId) return;
+      currentDirPath = parentDir;
       filteredItems = files.map(f => ({
         type: f.is_dir ? "dir" : "file",
         title: f.name === ".." ? ".. (返回上级目录)" : f.name,
@@ -655,7 +651,7 @@ function renderResults() {
   filteredItems.forEach((item, index) => {
     const el = document.createElement("div");
     el.className = `result-item ${index === selectedIndex ? "selected" : ""}`;
-    el.style.animationDelay = `${index * 25}ms`;
+    el.style.animationDelay = `${Math.min(index * 15, 150)}ms`;
     const iconWrapper = document.createElement("div");
     iconWrapper.className = "result-icon-wrapper";
     if (item.icon === "⚡" || item.icon === "📂" || item.icon === "🌐") {
@@ -965,6 +961,12 @@ document.addEventListener("keydown", (e) => {
   if (!isRecording) return;
   e.preventDefault();
   e.stopPropagation();
+  if (e.key === "Escape") {
+    currentShortcut = settings.shortcut || "Ctrl+Space";
+    if (shortcutDisplay) shortcutDisplay.textContent = currentShortcut;
+    toggleRecordingShortcut();
+    return;
+  }
   recordShortcut(e);
 });
 

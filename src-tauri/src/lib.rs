@@ -131,7 +131,7 @@ pub fn run() {
             // 3. Register global shortcut from settings
             eprintln!("[FromZero] Registering shortcut: {}", settings.shortcut);
             match commands::register_shortcut_internal(app.handle(), &settings.shortcut) {
-                Ok(_) => eprintln!("[FromZero] ✓ Shortcut '{}' registered successfully", settings.shortcut),
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!("[FromZero] ✗ Primary shortcut failed: {e}");
                     let fallback = "Ctrl+Alt+Space";

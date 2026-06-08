@@ -481,13 +481,10 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
         // Skip scanning other drives if this is an inline search (performance optimization)
         #[cfg(target_os = "windows")]
         if !is_inline {
-            extern "system" {
-                fn GetLogicalDrives() -> u32;
-            }
             let system_drive = std::env::var("SystemDrive")
                 .unwrap_or_else(|_| "C:".to_string())
                 .to_uppercase();
-            let mask = unsafe { GetLogicalDrives() };
+            let mask = unsafe { winapi::um::fileapi::GetLogicalDrives() };
             for i in 0..26 {
                 if (mask & (1 << i)) != 0 {
                     let letter = (b'A' + i) as char;
@@ -775,7 +772,19 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
         if dangerous_exts.contains(&ext.as_str()) {
             // Allow only if the file is in the scanned apps whitelist (either as shortcut or target executable)
             let is_whitelisted = apps.iter().any(|app| {
-                clean_path_str(app.path.clone()) == path_clean || clean_path_str(app.target.clone()) == path_clean
+                let clean_p = if let Ok(p_path) = std::path::PathBuf::from(&app.path).canonicalize() {
+                    clean_path_str(p_path.to_string_lossy().to_string())
+                } else {
+                    clean_path_str(app.path.clone())
+                };
+
+                let clean_t = if let Ok(t_path) = std::path::PathBuf::from(&app.target).canonicalize() {
+                    clean_path_str(t_path.to_string_lossy().to_string())
+                } else {
+                    clean_path_str(app.target.clone())
+                };
+
+                clean_p.eq_ignore_ascii_case(&path_clean) || clean_t.eq_ignore_ascii_case(&path_clean)
             });
             if !is_whitelisted {
                 return Err(format!("安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。", ext));
