@@ -340,6 +340,35 @@ fn clean_path_str(path: String) -> String {
     }
 }
 
+fn is_hidden_or_system(entry: &std::fs::DirEntry) -> bool {
+    let name = entry.file_name().to_string_lossy().to_string();
+    if IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+        return true;
+    }
+    if name.starts_with('$') {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if let Ok(metadata) = entry.metadata() {
+            let attrs = metadata.file_attributes();
+            // FILE_ATTRIBUTE_HIDDEN = 0x2
+            // FILE_ATTRIBUTE_SYSTEM = 0x4
+            if (attrs & 0x2) != 0 || (attrs & 0x4) != 0 {
+                return true;
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if name.starts_with('.') {
+            return true;
+        }
+    }
+    false
+}
+
 fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
     let metadata = entry.metadata().ok()?;
     // Skip symbolic links and junctions to prevent infinite recursion
@@ -386,11 +415,30 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
         }
 
         let mut items: Vec<FileItem> = Vec::new();
+
+        // Add ".." parent directory entry if it exists
+        if let Some(parent) = dir_path.parent() {
+            let parent_clean = clean_path_str(parent.to_string_lossy().to_string());
+            let current_clean = clean_path_str(dir_path.to_string_lossy().to_string());
+            if !parent_clean.is_empty() && parent_clean != current_clean {
+                items.push(FileItem {
+                    name: "..".to_string(),
+                    path: parent_clean,
+                    is_dir: true,
+                    size: 0,
+                    extension: String::new(),
+                    modified: 0,
+                });
+            }
+        }
         let entries = std::fs::read_dir(&dir_path)
             .map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
 
         let search_lower = search_term.to_lowercase();
         for entry in entries.flatten() {
+            if is_hidden_or_system(&entry) {
+                continue;
+            }
             if let Some(item) = metadata_to_file_item(&entry) {
                 if search_lower.is_empty() || item.name.to_lowercase().contains(&search_lower) {
                     items.push(item);
@@ -471,6 +519,10 @@ fn search_recursive(
     for entry in entries.flatten() {
         if results.len() >= max_results {
             return;
+        }
+
+        if is_hidden_or_system(&entry) {
+            continue;
         }
 
         let metadata = match entry.metadata() {

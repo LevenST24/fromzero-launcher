@@ -528,10 +528,10 @@ async function handleSearch() {
       if (currentSearchId !== lastSearchId) return;
       filteredItems = files.map(f => ({
         type: f.is_dir ? "dir" : "file",
-        title: f.name,
+        title: f.name === ".." ? ".. (返回上级目录)" : f.name,
         subtitle: f.path,
         icon: getFileIcon(f),
-        badge: f.is_dir ? "文件夹" : (f.extension ? f.extension.toUpperCase() : "文件"),
+        badge: f.is_dir ? (f.name === ".." ? "返回" : "文件夹") : (f.extension ? f.extension.toUpperCase() : "文件"),
         data: f
       }));
     } catch (e) {
@@ -982,6 +982,7 @@ function formatDate(unixSec) {
 
 // Get file icon emoji based on extension
 function getFileIcon(item) {
+  if (item.name === "..") return "↩️";
   if (item.is_dir) return "📁";
   const ext = item.extension || "";
   const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
