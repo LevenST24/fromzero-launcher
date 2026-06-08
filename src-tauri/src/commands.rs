@@ -26,13 +26,13 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
         let _ = settings::apply_autostart_setting(&app_handle, settings.autostart);
     }
     
-    settings::save_settings(&app_handle, &settings)?;
-    
     // Only re-register the global hotkey if it actually changed
-    // Skip re-registration when the shortcut is the same to avoid "HotKey already registered" errors
+    // Register first, so if it fails, settings are not saved to disk
     if old_settings.shortcut != settings.shortcut {
         register_shortcut_internal(&app_handle, &settings.shortcut)?;
     }
+    
+    settings::save_settings(&app_handle, &settings)?;
     Ok(())
 }
 
@@ -459,7 +459,8 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
 }
 
 #[tauri::command]
-pub async fn search_files(query: String) -> Result<Vec<FileItem>, String> {
+pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<FileItem>, String> {
+    let is_inline = is_inline.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
         let query_lower = query.to_lowercase().trim().to_string();
         if query_lower.is_empty() {
@@ -477,8 +478,9 @@ pub async fn search_files(query: String) -> Result<Vec<FileItem>, String> {
         ];
 
         // Detect other local drives on Windows to support search on E:\, D:\, etc.
+        // Skip scanning other drives if this is an inline search (performance optimization)
         #[cfg(target_os = "windows")]
-        {
+        if !is_inline {
             extern "system" {
                 fn GetLogicalDrives() -> u32;
             }
@@ -721,10 +723,15 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 modified,
             })
         } else if text_exts.contains(&ext.as_str()) {
-            // Text preview: first 30 lines
-            let content = std::fs::read(&file_path)
+            // Text preview: read at most 64KB to prevent OOM
+            use std::io::Read;
+            let file = std::fs::File::open(&file_path)
+                .map_err(|e| format!("无法打开文件: {}", e))?;
+            let mut handle = file.take(64 * 1024);
+            let mut buffer = Vec::new();
+            handle.read_to_end(&mut buffer)
                 .map_err(|e| format!("无法读取文件: {}", e))?;
-            let text = String::from_utf8_lossy(&content);
+            let text = String::from_utf8_lossy(&buffer);
             let preview: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
             Ok(FilePreview {
                 file_type: "text".to_string(),
@@ -746,32 +753,37 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
 
 #[tauri::command]
 pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
-    let file_path = std::path::PathBuf::from(&path);
-    let file_path = file_path.canonicalize()
-        .map_err(|e| format!("路径解析失败: {}", e))?;
-    let path = clean_path_str(file_path.to_string_lossy().to_string());
-    if !file_path.exists() {
-        return Err(format!("文件不存在: {}", path));
-    }
-
-    // Security: block direct execution of script/executable files
-    let ext = file_path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let dangerous_exts = ["exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif"];
-    if dangerous_exts.contains(&ext.as_str()) {
-        // Allow only if the file is in the scanned apps whitelist
-        let is_whitelisted = if let Ok(apps) = state.apps.lock() {
-            apps.iter().any(|app| app.path == path)
-        } else {
-            false
-        };
-        if !is_whitelisted {
-            return Err(format!("安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。", ext));
+    let apps = if let Ok(apps) = state.apps.lock() {
+        apps.clone()
+    } else {
+        Vec::new()
+    };
+    tokio::task::spawn_blocking(move || {
+        let file_path = std::path::PathBuf::from(&path);
+        let file_path = file_path.canonicalize()
+            .map_err(|e| format!("路径解析失败: {}", e))?;
+        let path_clean = clean_path_str(file_path.to_string_lossy().to_string());
+        if !file_path.exists() {
+            return Err(format!("文件不存在: {}", path_clean));
         }
-    }
 
-    open::that(&path).map_err(|e| format!("无法打开文件: {}", e))
+        // Security: block direct execution of script/executable files
+        let ext = file_path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let dangerous_exts = ["exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif"];
+        if dangerous_exts.contains(&ext.as_str()) {
+            // Allow only if the file is in the scanned apps whitelist (either as shortcut or target executable)
+            let is_whitelisted = apps.iter().any(|app| {
+                clean_path_str(app.path.clone()) == path_clean || clean_path_str(app.target.clone()) == path_clean
+            });
+            if !is_whitelisted {
+                return Err(format!("安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。", ext));
+            }
+        }
+
+        open::that(&path_clean).map_err(|e| format!("无法打开文件: {}", e))
+    }).await.map_err(|e| format!("Open thread failed: {}", e))?
 }
 
 #[cfg(test)]

@@ -64,6 +64,9 @@ let isComposing = false;
 let currentDirPath = null;
 let previewDebounceTimeout = null;
 
+// Recorded hotkey state
+let currentShortcut = "Ctrl+Space";
+
 // Mouse tracking to ignore hover selection during scroll
 let lastMouseX = 0;
 let lastMouseY = 0;
@@ -316,11 +319,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       });
       searchInput.addEventListener("compositionend", () => {
         isComposing = false;
-        clearTimeout(searchDebounceTimeout);
-        searchDebounceTimeout = setTimeout(() => {
-          searchDebounceTimeout = null;
-          handleSearch();
-        }, 100);
       });
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
@@ -498,7 +496,7 @@ async function handleSearch() {
       const fileQuery = fileSearchMatch[1].trim();
       if (searchIndicator) searchIndicator.textContent = "🔍";
       try {
-        const files = await invoke("search_files", { query: fileQuery });
+        const files = await invoke("search_files", { query: fileQuery, isInline: false });
         if (currentSearchId !== lastSearchId) return;
         filteredItems = files.slice(0, 20).map(f => ({
           type: f.is_dir ? "dir" : "file",
@@ -589,7 +587,7 @@ async function handleSearch() {
       try {
         const [appResults, fileResults] = await Promise.all([
           invoke("search_apps", { query }),
-          invoke("search_files", { query }).catch(err => {
+          invoke("search_files", { query, isInline: true }).catch(err => {
             console.warn("[FromZero] Inline file search error:", err);
             return [];
           })
@@ -879,7 +877,8 @@ function openSettings() {
   switchTab("general");
   if (settingsOverlay) settingsOverlay.classList.add("active");
   if (themeSelect) themeSelect.value = settings.theme || "dark";
-  if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Ctrl+Space";
+  currentShortcut = settings.shortcut || "Ctrl+Space";
+  if (shortcutDisplay) shortcutDisplay.textContent = currentShortcut;
   if (autostartToggle) autostartToggle.checked = settings.autostart || false;
 
   // Back up settings in case of user cancel
@@ -908,7 +907,7 @@ function closeSettings() {
 
 async function saveSettingsConfig() {
   if (themeSelect) settings.theme = themeSelect.value;
-  if (shortcutDisplay) settings.shortcut = shortcutDisplay.textContent;
+  settings.shortcut = currentShortcut;
   if (autostartToggle) settings.autostart = autostartToggle.checked;
   applyTheme(settings.theme);
 
@@ -1006,7 +1005,8 @@ function recordShortcut(e) {
   }
 
   if (parts.length > 0 && !ignoreKeys.includes(e.key)) {
-    if (shortcutDisplay) shortcutDisplay.textContent = parts.join("+");
+    currentShortcut = parts.join("+");
+    if (shortcutDisplay) shortcutDisplay.textContent = currentShortcut;
     toggleRecordingShortcut();
   }
 }
@@ -1070,13 +1070,17 @@ async function showPreview(item) {
     return;
   }
 
+  const requestedPath = item.data.path;
   previewPanel.classList.add("active");
   previewHeader.textContent = item.data.name || "";
   previewMeta.textContent = "加载中...";
   clearChildren(previewContent);
 
   try {
-    const preview = await invoke("get_file_preview", { path: item.data.path });
+    const preview = await invoke("get_file_preview", { path: requestedPath });
+    if (!filteredItems[selectedIndex] || filteredItems[selectedIndex].data.path !== requestedPath) {
+      return; // Stale request, ignore
+    }
     // Update meta
     const metaParts = [];
     if (preview.size > 0) metaParts.push(formatFileSize(preview.size));
@@ -1194,6 +1198,8 @@ async function showPreview(item) {
 function hidePreview() {
   const previewPanel = document.getElementById("preview-panel");
   if (previewPanel) previewPanel.classList.remove("active");
+  const previewContent = document.getElementById("preview-content");
+  if (previewContent) clearChildren(previewContent);
 }
 
 // Debounced preview update when selection changes
