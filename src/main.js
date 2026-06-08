@@ -108,7 +108,7 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.2.0";
+const APP_VERSION = "v0.2.1";
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -1053,7 +1053,7 @@ function getFileIcon(item) {
   if (codeExts.includes(ext)) return "💻";
   if (archiveExts.includes(ext)) return "📦";
   if (ext === "txt" || ext === "md" || ext === "log") return "📄";
-  if (ext === "mp3" || ext === "wav" || ext === "flac") return "🎵";
+  if (ext === "mp3" || ext === "wav" || ext === "flac" || ext === "ogg") return "🎵";
   if (ext === "mp4" || ext === "avi" || ext === "mkv") return "🎬";
   return "📄";
 }
