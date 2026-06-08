@@ -503,7 +503,7 @@ async function handleSearch() {
       else hidePreview();
       return;
     }
-  } else if (query.startsWith("/") || query.startsWith("\\\\") || /^[a-zA-Z]:\\/.test(query) || /^[a-zA-Z]:$/.test(query)) {
+  } else if (query.startsWith("\\\\") || query.startsWith("//") || /^[a-zA-Z]:[\\\/]/.test(query) || /^[a-zA-Z]:$/.test(query)) {
     if (searchIndicator) searchIndicator.textContent = "📂";
     // Directory navigation mode
     let dirPath = query.replace(/\//g, "\\");
