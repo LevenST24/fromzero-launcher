@@ -634,6 +634,7 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
             .unwrap_or_default();
 
         let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
+        let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
         let text_exts = [
             "txt", "md", "json", "js", "ts", "rs", "css", "html", "py", "sh", "bat",
             "toml", "yaml", "yml", "ini", "log", "conf", "cfg", "xml", "csv",
@@ -666,6 +667,55 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
             };
             Ok(FilePreview {
                 file_type: "image".to_string(),
+                content: format!("data:{};base64,{}", mime, encoded),
+                size,
+                modified,
+            })
+        } else if ext == "pdf" {
+            // PDF preview: encode as Base64 (max 30MB)
+            if size > 30 * 1024 * 1024 {
+                return Ok(FilePreview {
+                    file_type: "pdf".to_string(),
+                    content: String::new(),
+                    size,
+                    modified,
+                });
+            }
+            let bytes = std::fs::read(&file_path)
+                .map_err(|e| format!("无法读取文件: {}", e))?;
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(FilePreview {
+                file_type: "pdf".to_string(),
+                content: format!("data:application/pdf;base64,{}", encoded),
+                size,
+                modified,
+            })
+        } else if audio_exts.contains(&ext.as_str()) {
+            // Audio preview: encode as Base64 (max 50MB)
+            if size > 50 * 1024 * 1024 {
+                return Ok(FilePreview {
+                    file_type: "audio".to_string(),
+                    content: String::new(),
+                    size,
+                    modified,
+                });
+            }
+            let bytes = std::fs::read(&file_path)
+                .map_err(|e| format!("无法读取文件: {}", e))?;
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let mime = match ext.as_str() {
+                "mp3" => "audio/mpeg",
+                "wav" => "audio/wav",
+                "ogg" => "audio/ogg",
+                "flac" => "audio/flac",
+                "aac" => "audio/aac",
+                "m4a" => "audio/mp4",
+                _ => "audio/ogg",
+            };
+            Ok(FilePreview {
+                file_type: "audio".to_string(),
                 content: format!("data:{};base64,{}", mime, encoded),
                 size,
                 modified,

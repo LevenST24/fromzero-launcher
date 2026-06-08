@@ -64,6 +64,10 @@ let isComposing = false;
 let currentDirPath = null;
 let previewDebounceTimeout = null;
 
+// Mouse tracking to ignore hover selection during scroll
+let lastMouseX = 0;
+let lastMouseY = 0;
+
 // DOM Elements
 const searchInput = document.getElementById("search-input");
 const searchIndicator = document.getElementById("search-indicator");
@@ -98,7 +102,7 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.1.6";
+const APP_VERSION = "v0.2.0";
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -152,6 +156,16 @@ function getEngineName(prefix) {
 // Helper: clear DOM element children safely (no innerHTML)
 // =============================================
 function clearChildren(el) {
+  const mediaElements = el.querySelectorAll("[data-blob-url]");
+  mediaElements.forEach(item => {
+    if (item.dataset.blobUrl) {
+      try {
+        URL.revokeObjectURL(item.dataset.blobUrl);
+      } catch (err) {
+        console.warn("Failed to revoke blob URL:", err);
+      }
+    }
+  });
   while (el.firstChild) {
     el.removeChild(el.firstChild);
   }
@@ -679,7 +693,22 @@ function renderResults() {
     el.appendChild(info);
     el.appendChild(badge);
     el.appendChild(action);
-    el.addEventListener("click", () => { selectedIndex = index; executeItemAction(item); });
+    el.addEventListener("click", () => {
+      selectedIndex = index;
+      updateSelectionVisual();
+    });
+    el.addEventListener("dblclick", () => {
+      selectedIndex = index;
+      updateSelectionVisual();
+      executeItemAction(item);
+    });
+    el.addEventListener("mouseenter", (e) => {
+      if (e.screenX === lastMouseX && e.screenY === lastMouseY) return;
+      lastMouseX = e.screenX;
+      lastMouseY = e.screenY;
+      selectedIndex = index;
+      updateSelectionVisual();
+    });
     resultsList.appendChild(el);
   });
   const selectedEl = resultsList.children[selectedIndex];
@@ -1062,6 +1091,66 @@ async function showPreview(item) {
       img.alt = item.data.name;
       img.loading = "lazy";
       previewContent.appendChild(img);
+    } else if (preview.file_type === "pdf" && preview.content) {
+      try {
+        const base64Data = preview.content.split(",")[1] || preview.content;
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'application/pdf' });
+        const blobUrl = URL.createObjectURL(blob);
+
+        const iframe = document.createElement("iframe");
+        iframe.src = blobUrl;
+        iframe.style.width = "100%";
+        iframe.style.height = "100%";
+        iframe.style.border = "none";
+        iframe.style.borderRadius = "8px";
+        iframe.style.backgroundColor = "white";
+        iframe.dataset.blobUrl = blobUrl;
+
+        previewContent.appendChild(iframe);
+      } catch (err) {
+        console.error("PDF preview error:", err);
+        const errDiv = document.createElement("div");
+        errDiv.className = "preview-empty";
+        errDiv.textContent = "PDF 预览失败";
+        previewContent.appendChild(errDiv);
+      }
+    } else if (preview.file_type === "audio" && preview.content) {
+      try {
+        const base64Data = preview.content.split(",")[1] || preview.content;
+        const mimeMatch = preview.content.match(/^data:([^;]+);base64,/);
+        const mimeType = mimeMatch ? mimeMatch[1] : "audio/ogg";
+
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+
+        const audio = document.createElement("audio");
+        audio.src = blobUrl;
+        audio.controls = true;
+        audio.style.width = "100%";
+        audio.style.marginTop = "20px";
+        audio.style.borderRadius = "4px";
+        audio.dataset.blobUrl = blobUrl;
+
+        previewContent.appendChild(audio);
+      } catch (err) {
+        console.error("Audio preview error:", err);
+        const errDiv = document.createElement("div");
+        errDiv.className = "preview-empty";
+        errDiv.textContent = "音频预览失败";
+        previewContent.appendChild(errDiv);
+      }
     } else if (preview.file_type === "text" && preview.content) {
       const pre = document.createElement("pre");
       pre.textContent = preview.content;
@@ -1082,6 +1171,10 @@ async function showPreview(item) {
       empty.className = "preview-empty";
       if (preview.file_type === "image") {
         empty.textContent = "图片过大，无法预览";
+      } else if (preview.file_type === "pdf") {
+        empty.textContent = "PDF 过大，无法预览";
+      } else if (preview.file_type === "audio") {
+        empty.textContent = "音频过大，无法预览";
       } else {
         empty.textContent = "不可直接预览";
       }
@@ -1108,5 +1201,5 @@ function triggerPreview(item) {
   clearTimeout(previewDebounceTimeout);
   previewDebounceTimeout = setTimeout(() => {
     showPreview(item);
-  }, 150);
+  }, 50);
 }
