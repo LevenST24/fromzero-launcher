@@ -7,7 +7,6 @@ pub struct AppState {
     pub apps: Mutex<Vec<AppItem>>,
     pub settings_lock: Mutex<()>,
     pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
-    pub captured_background: Mutex<String>,
 }
 
 #[tauri::command]
@@ -29,8 +28,11 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
     
     settings::save_settings(&app_handle, &settings)?;
     
-    // Dynamically register the new global hotkey
-    register_shortcut_internal(&app_handle, &settings.shortcut)?;
+    // Only re-register the global hotkey if it actually changed
+    // Skip re-registration when the shortcut is the same to avoid "HotKey already registered" errors
+    if old_settings.shortcut != settings.shortcut {
+        register_shortcut_internal(&app_handle, &settings.shortcut)?;
+    }
     Ok(())
 }
 
@@ -52,8 +54,11 @@ pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: 
 }
 
 #[tauri::command]
-pub fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<AppItem>, String> {
-    let apps = indexer::scan_start_menu(&app_handle);
+pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<AppItem>, String> {
+    let app_handle_clone = app_handle.clone();
+    let apps = tokio::task::spawn_blocking(move || {
+        indexer::scan_start_menu(&app_handle_clone)
+    }).await.map_err(|e| format!("App scan thread failed: {}", e))?;
     
     // Update memory cache
     if let Ok(mut cache) = state.apps.lock() {
@@ -129,6 +134,7 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
 
 #[tauri::command]
 pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let path = clean_path_str(path);
     let path_buf = std::path::PathBuf::from(&path);
     if !path_buf.exists() {
         return Err(format!("应用文件路径不存在: {}", path));
@@ -237,7 +243,6 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
                     if visible {
                         let _ = window.hide();
                     } else {
-                        let _ = capture_background_before_show(app);
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -260,7 +265,6 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
                                 if visible {
                                     let _ = window.hide();
                                 } else {
-                                    let _ = capture_background_before_show(app);
                                     let _ = window.show();
                                     let _ = window.set_focus();
                                 }
@@ -268,7 +272,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
                         }
                     }
                 });
-                eprintln!("[FromZero] ↻ Restored default Alt+Space as fallback");
+                eprintln!("[FromZero] ↻ Restored default Ctrl+Space as fallback");
             }
             Err(format!("快捷键 '{}' 注册失败: {}", shortcut_str, e))
         }
@@ -281,156 +285,368 @@ pub fn debug_log(_msg: String) {
     println!("[Frontend-Debug] {}", _msg);
 }
 
+/// Toggle DWM Acrylic blur on/off based on glassBlur value.
+/// glassBlur = 0 → transparent (DWMSBT_NONE), glassBlur > 0 → blurred (DWMSBT_TRANSIENTWINDOW).
 #[cfg(target_os = "windows")]
-fn capture_screen_region(x: i32, y: i32, width: i32, height: i32) -> Result<String, String> {
-    use std::ptr;
-    use winapi::um::wingdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-        GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, SRCCOPY,
-    };
-    use winapi::um::winuser::{GetDC, ReleaseDC};
+#[tauri::command]
+pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
+    use std::ffi::c_void;
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+    const DWMSBT_NONE: u32 = 1;
+    const DWMSBT_TRANSIENTWINDOW: u32 = 3;
 
-    unsafe {
-        let hwnd_desktop = ptr::null_mut();
-        let hdc_screen = GetDC(hwnd_desktop);
-        if hdc_screen.is_null() {
-            return Err("GetDC failed".to_string());
-        }
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        if hdc_mem.is_null() {
-            ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err("CreateCompatibleDC failed".to_string());
-        }
-        let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
-        if hbitmap.is_null() {
-            DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err("CreateCompatibleBitmap failed".to_string());
-        }
-
-        let h_old = SelectObject(hdc_mem, hbitmap as *mut _);
-
-        // Copy screen contents
-        let success = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, x, y, SRCCOPY);
-        if success == 0 {
-            SelectObject(hdc_mem, h_old);
-            DeleteObject(hbitmap as *mut _);
-            DeleteDC(hdc_mem);
-            ReleaseDC(hwnd_desktop, hdc_screen);
-            return Err("BitBlt failed".to_string());
-        }
-
-        // Get bitmap pixel bits
-        let mut bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height, // negative for top-down DIB
-                biPlanes: 1,
-                biBitCount: 32, // BGRA
-                biCompression: BI_RGB,
-                biSizeImage: (width * height * 4) as u32,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
-            },
-            bmiColors: [winapi::um::wingdi::RGBQUAD {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbReserved: 0,
-            }; 1],
-        };
-
-        let buf_size = (width * height * 4) as usize;
-        let mut pixels = vec![0u8; buf_size];
-
-        let result = GetDIBits(
-            hdc_screen,
-            hbitmap,
-            0,
-            height as u32,
-            pixels.as_mut_ptr() as *mut _,
-            &mut bmi,
-            DIB_RGB_COLORS,
-        );
-
-        // Cleanup
-        SelectObject(hdc_mem, h_old);
-        DeleteObject(hbitmap as *mut _);
-        DeleteDC(hdc_mem);
-        ReleaseDC(hwnd_desktop, hdc_screen);
-
-        if result == 0 {
-            return Err("GetDIBits failed".to_string());
-        }
-
-        // Assemble BMP file in memory
-        let file_size = 54 + buf_size;
-        let mut bmp = Vec::with_capacity(file_size);
-
-        // BMP Header (14 bytes)
-        bmp.push(0x42); // 'B'
-        bmp.push(0x4D); // 'M'
-        bmp.extend_from_slice(&(file_size as u32).to_le_bytes());
-        bmp.extend_from_slice(&[0, 0, 0, 0]); // Reserved
-        bmp.extend_from_slice(&54u32.to_le_bytes()); // Offset to pixel data
-
-        // DIB Header (40 bytes)
-        bmp.extend_from_slice(&40u32.to_le_bytes()); // header size
-        bmp.extend_from_slice(&(width as i32).to_le_bytes());
-        bmp.extend_from_slice(&(-(height as i32)).to_le_bytes());
-        bmp.extend_from_slice(&1u16.to_le_bytes()); // planes
-        bmp.extend_from_slice(&32u16.to_le_bytes()); // bpp (32-bit BGRA)
-        bmp.extend_from_slice(&BI_RGB.to_le_bytes());
-        bmp.extend_from_slice(&(buf_size as u32).to_le_bytes());
-        bmp.extend_from_slice(&0i32.to_le_bytes());
-        bmp.extend_from_slice(&0i32.to_le_bytes());
-        bmp.extend_from_slice(&0u32.to_le_bytes());
-        bmp.extend_from_slice(&0u32.to_le_bytes());
-
-        // Append pixel bytes
-        bmp.extend_from_slice(&pixels);
-
-        // Encode as Base64 BMP data URL
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bmp);
-        Ok(format!("data:image/bmp;base64,{}", encoded))
-    }
+    let window = app.get_webview_window("main").ok_or("Window not found")?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let raw_hwnd = hwnd.0 as *mut c_void;
+    let backdrop_type = if value > 0 { DWMSBT_TRANSIENTWINDOW } else { DWMSBT_NONE };
+    crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop_type)?;
+    eprintln!("[FromZero] DWM Acrylic {}", if value > 0 { "enabled" } else { "disabled" });
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn capture_screen_region(_x: i32, _y: i32, _width: i32, _height: i32) -> Result<String, String> {
-    Err("Only Windows is supported".to_string())
+#[tauri::command]
+pub fn set_blur(_app: AppHandle, _value: i32) -> Result<(), String> {
+    Ok(())
 }
 
-pub fn capture_background_before_show(app_handle: &AppHandle) -> Result<(), String> {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        let pos = window.outer_position().unwrap_or(tauri::PhysicalPosition::new(0, 0));
-        let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(640, 450));
-        match capture_screen_region(pos.x, pos.y, size.width as i32, size.height as i32) {
-            Ok(base64_str) => {
-                let state = app_handle.state::<AppState>();
-                if let Ok(mut bg_guard) = state.captured_background.lock() {
-                    *bg_guard = base64_str;
+// =============================================
+// File Explorer Commands
+// =============================================
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FileItem {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub extension: String,
+    pub modified: u64,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FilePreview {
+    pub file_type: String,
+    pub content: String,
+    pub size: u64,
+    pub modified: u64,
+}
+
+fn clean_path_str(path: String) -> String {
+    if path.starts_with(r"\\?\") {
+        path[4..].to_string()
+    } else {
+        path
+    }
+}
+
+fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
+    let metadata = entry.metadata().ok()?;
+    // Skip symbolic links and junctions to prevent infinite recursion
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    let name = entry.file_name().to_string_lossy().to_string();
+    let path = clean_path_str(entry.path().to_string_lossy().to_string());
+    let is_dir = metadata.is_dir();
+    let size = if is_dir { 0 } else { metadata.len() };
+    let extension = if is_dir {
+        String::new()
+    } else {
+        entry.path().extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let modified = metadata.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(FileItem { name, path, is_dir, size, extension, modified })
+}
+
+/// Directories to skip during recursive file search
+const IGNORED_DIRS: &[&str] = &[
+    "node_modules", ".git", ".svn", ".hg", "__pycache__", ".cache",
+    "AppData", "$Recycle.Bin", "System Volume Information",
+    ".vs", ".idea", "target", "dist", "build", ".next",
+];
+
+#[tauri::command]
+pub async fn list_directory(path: String, search_term: String) -> Result<Vec<FileItem>, String> {
+    tokio::task::spawn_blocking(move || {
+        let dir_path = std::path::PathBuf::from(&path);
+        // Canonicalize to resolve .. and symlinks for security
+        let dir_path = dir_path.canonicalize()
+            .map_err(|e| format!("路径解析失败: {}", e))?;
+        if !dir_path.exists() {
+            return Err(format!("路径不存在: {}", path));
+        }
+        if !dir_path.is_dir() {
+            return Err(format!("不是目录: {}", path));
+        }
+
+        let mut items: Vec<FileItem> = Vec::new();
+        let entries = std::fs::read_dir(&dir_path)
+            .map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
+
+        let search_lower = search_term.to_lowercase();
+        for entry in entries.flatten() {
+            if let Some(item) = metadata_to_file_item(&entry) {
+                if search_lower.is_empty() || item.name.to_lowercase().contains(&search_lower) {
+                    items.push(item);
                 }
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("[FromZero] Background capture error: {}", e);
-                Err(e)
             }
         }
-    } else {
-        Err("Main window not found".to_string())
+
+        // Sort: directories first, then alphabetically
+        items.sort_by(|a, b| {
+            b.is_dir.cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        // Limit to 50 results to prevent UI flooding
+        items.truncate(50);
+        Ok(items)
+    }).await.map_err(|e| format!("Directory listing thread failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn search_files(query: String) -> Result<Vec<FileItem>, String> {
+    tokio::task::spawn_blocking(move || {
+        let query_lower = query.to_lowercase().trim().to_string();
+        if query_lower.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let user_profile = std::env::var("USERPROFILE")
+            .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+        let search_roots = [
+            format!("{}\\Desktop", user_profile),
+            format!("{}\\Documents", user_profile),
+            format!("{}\\Downloads", user_profile),
+            format!("{}\\Pictures", user_profile),
+        ];
+
+        let mut results: Vec<FileItem> = Vec::new();
+        let max_results = 30;
+        let max_depth = 3;
+
+        for root in &search_roots {
+            let root_path = std::path::PathBuf::from(root);
+            if root_path.exists() && root_path.is_dir() {
+                search_recursive(&root_path, &query_lower, &mut results, max_results, max_depth, 0);
+            }
+            if results.len() >= max_results {
+                break;
+            }
+        }
+
+        // Sort: directories first, then by name
+        results.sort_by(|a, b| {
+            b.is_dir.cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        Ok(results)
+    }).await.map_err(|e| format!("Search thread failed: {}", e))?
+}
+
+fn search_recursive(
+    dir: &std::path::Path,
+    query: &str,
+    results: &mut Vec<FileItem>,
+    max_results: usize,
+    max_depth: usize,
+    current_depth: usize,
+) {
+    if current_depth > max_depth || results.len() >= max_results {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        if results.len() >= max_results {
+            return;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        // Skip symbolic links and junctions
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        // On Windows, check for reparse points (junctions)
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                continue;
+            }
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if metadata.is_dir() {
+            // Skip ignored directories
+            if IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            // Check if dir name matches
+            if name.to_lowercase().contains(query) {
+                if let Some(item) = metadata_to_file_item(&entry) {
+                    results.push(item);
+                }
+            }
+            // Recurse into subdirectory
+            search_recursive(&entry.path(), query, results, max_results, max_depth, current_depth + 1);
+        } else {
+            // Check if file name matches
+            if name.to_lowercase().contains(query) {
+                if let Some(item) = metadata_to_file_item(&entry) {
+                    results.push(item);
+                }
+            }
+        }
     }
 }
 
 #[tauri::command]
-pub fn get_background(state: State<'_, AppState>) -> Result<String, String> {
-    let bg_guard = state.captured_background.lock().map_err(|e| e.to_string())?;
-    Ok(bg_guard.clone())
+pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
+    tokio::task::spawn_blocking(move || {
+        let file_path = std::path::PathBuf::from(&path);
+        let file_path = file_path.canonicalize()
+            .map_err(|e| format!("路径解析失败: {}", e))?;
+        if !file_path.exists() {
+            return Err(format!("文件不存在: {}", path));
+        }
+
+        let metadata = std::fs::metadata(&file_path)
+            .map_err(|e| format!("无法读取元数据: {}", e))?;
+        let size = metadata.len();
+        let modified = metadata.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if metadata.is_dir() {
+            // For folders: list first 10 items
+            let mut items = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&file_path) {
+                for entry in entries.flatten().take(10) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+                    items.push(format!("{} {}", if is_dir { "📁" } else { "📄" }, name));
+                }
+            }
+            return Ok(FilePreview {
+                file_type: "folder".to_string(),
+                content: items.join("\n"),
+                size: 0,
+                modified,
+            });
+        }
+
+        let ext = file_path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+        let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
+        let text_exts = [
+            "txt", "md", "json", "js", "ts", "rs", "css", "html", "py", "sh", "bat",
+            "toml", "yaml", "yml", "ini", "log", "conf", "cfg", "xml", "csv",
+            "c", "cpp", "h", "hpp", "java", "go", "rb", "php", "sql", "r",
+        ];
+
+        if image_exts.contains(&ext.as_str()) {
+            // Image preview: encode as Base64 (max 10MB)
+            if size > 10 * 1024 * 1024 {
+                return Ok(FilePreview {
+                    file_type: "image".to_string(),
+                    content: String::new(),
+                    size,
+                    modified,
+                });
+            }
+            let bytes = std::fs::read(&file_path)
+                .map_err(|e| format!("无法读取文件: {}", e))?;
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let mime = match ext.as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                "ico" => "image/x-icon",
+                "svg" => "image/svg+xml",
+                _ => "application/octet-stream",
+            };
+            Ok(FilePreview {
+                file_type: "image".to_string(),
+                content: format!("data:{};base64,{}", mime, encoded),
+                size,
+                modified,
+            })
+        } else if text_exts.contains(&ext.as_str()) {
+            // Text preview: first 30 lines
+            let content = std::fs::read(&file_path)
+                .map_err(|e| format!("无法读取文件: {}", e))?;
+            let text = String::from_utf8_lossy(&content);
+            let preview: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
+            Ok(FilePreview {
+                file_type: "text".to_string(),
+                content: preview,
+                size,
+                modified,
+            })
+        } else {
+            // Binary/unknown: metadata only
+            Ok(FilePreview {
+                file_type: "binary".to_string(),
+                content: String::new(),
+                size,
+                modified,
+            })
+        }
+    }).await.map_err(|e| format!("Preview thread failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let file_path = std::path::PathBuf::from(&path);
+    let file_path = file_path.canonicalize()
+        .map_err(|e| format!("路径解析失败: {}", e))?;
+    let path = clean_path_str(file_path.to_string_lossy().to_string());
+    if !file_path.exists() {
+        return Err(format!("文件不存在: {}", path));
+    }
+
+    // Security: block direct execution of script/executable files
+    let ext = file_path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let dangerous_exts = ["exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif"];
+    if dangerous_exts.contains(&ext.as_str()) {
+        // Allow only if the file is in the scanned apps whitelist
+        let is_whitelisted = if let Ok(apps) = state.apps.lock() {
+            apps.iter().any(|app| app.path == path)
+        } else {
+            false
+        };
+        if !is_whitelisted {
+            return Err(format!("安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。", ext));
+        }
+    }
+
+    open::that(&path).map_err(|e| format!("无法打开文件: {}", e))
 }
 
 #[cfg(test)]

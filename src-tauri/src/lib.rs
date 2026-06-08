@@ -1,6 +1,7 @@
 mod commands;
 mod indexer;
 mod settings;
+mod dwm;
 
 use crate::commands::AppState;
 use std::sync::Mutex;
@@ -48,7 +49,6 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = commands::capture_background_before_show(app);
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -66,7 +66,6 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     if visible {
                         let _ = window.hide();
                     } else {
-                        let _ = commands::capture_background_before_show(app);
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -97,7 +96,6 @@ pub fn run() {
             apps: Mutex::new(Vec::new()),
             settings_lock: Mutex::new(()),
             tray: Mutex::new(None),
-            captured_background: Mutex::new(String::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
@@ -110,7 +108,11 @@ pub fn run() {
             commands::open_search,
             commands::execute_sys_command,
             commands::debug_log,
-            commands::get_background,
+            commands::set_blur,
+            commands::list_directory,
+            commands::search_files,
+            commands::get_file_preview,
+            commands::open_file,
         ])
         .setup(|app| {
             let Some(window) = app.get_webview_window("main") else {
@@ -162,11 +164,10 @@ pub fn run() {
                 eprintln!("[FromZero] Booted silently via autostart. Window remains hidden in tray.");
             }
 
-            // 6. Apply Mica/Acrylic AFTER window setup
-            // Commented out to eliminate the Windows 11 DWM rendering bug where applying native Mica/Acrylic
-            // on transparent borderless windows forces a solid black/grey shadow box on the bottom and right margins.
-            // Our CSS backdrop-filter handles the Liquid Glass frosted blur beautifully inside the client area.
-            // apply_window_vibrancy(&window);
+            // 6. DWM Acrylic (desktop blur) + native rounding.
+            // DWM Acrylic is the only way to blur the desktop behind a transparent WebView2 window.
+            // DWMWCP_ROUND prevents sharp-corner artifacts from the Acrylic material.
+            // DwmExtendFrameIntoClientArea is NOT used (causes caption buttons on borderless windows).
 
             #[cfg(target_os = "windows")]
             remove_dwm_border(&window);
@@ -181,67 +182,20 @@ pub fn run() {
 #[cfg(target_os = "windows")]
 fn remove_dwm_border(window: &WebviewWindow) {
     use std::ffi::c_void;
-
-    // DWM attribute constants
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWA_BORDER_COLOR: u32 = 34;
-    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWCP_ROUND: u32 = 2;
     const DWM_COLOR_NONE: u32 = 0xFFFFFFFE;
 
-    type DwmSetWindowAttributeFn = unsafe extern "system" fn(
-        hwnd: *mut c_void,
-        dw_attribute: u32,
-        pv_attribute: *const c_void,
-        cb_attribute: u32,
-    ) -> i32;
-
-    unsafe {
-        // SAFETY: These are compile-time string constants that cannot contain null bytes.
-        let module_name = std::ffi::CString::new("dwmapi.dll")
-            .expect("hardcoded ASCII string cannot contain null bytes");
-        let handle = winapi::um::libloaderapi::LoadLibraryA(module_name.as_ptr());
-        if !handle.is_null() {
-            let func_name = std::ffi::CString::new("DwmSetWindowAttribute")
-                .expect("hardcoded ASCII string cannot contain null bytes");
-            let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle, func_name.as_ptr());
-            if !proc_addr.is_null() {
-                let dwm_set_window_attribute: DwmSetWindowAttributeFn = std::mem::transmute(proc_addr);
-                if let Ok(hwnd) = window.hwnd() {
-                    let raw_hwnd = hwnd.0 as *mut c_void;
-
-                    // 1. Disable native DWM window rounding (Windows 11).
-                    // This is critical because DWM rounding natively draws a 1px border around the window.
-                    // By forcing DONOTROUND, the window remains a perfect native rectangle, and our CSS border-radius
-                    // rounds it smoothly inside WebView2 without drawing any native system borders.
-                    let corner_preference: u32 = DWMWCP_DONOTROUND;
-                    let hr_corner = dwm_set_window_attribute(
-                        raw_hwnd,
-                        DWMWA_WINDOW_CORNER_PREFERENCE,
-                        &corner_preference as *const _ as *const c_void,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                    if hr_corner == 0 {
-                        eprintln!("[FromZero] ✓ Successfully disabled native DWM window rounding");
-                    } else {
-                        eprintln!("[FromZero] DwmSetWindowAttribute failed to disable native rounding: hr = {}", hr_corner);
-                    }
-
-                    // 2. Set DWM border color to NONE.
-                    let border_color: u32 = DWM_COLOR_NONE;
-                    let hr_border = dwm_set_window_attribute(
-                        raw_hwnd,
-                        DWMWA_BORDER_COLOR,
-                        &border_color as *const _ as *const c_void,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                    if hr_border == 0 {
-                        eprintln!("[FromZero] ✓ Successfully disabled native DWM window border color");
-                    } else {
-                        eprintln!("[FromZero] DwmSetWindowAttribute failed to remove border color: hr = {}", hr_border);
-                    }
-                }
-            }
-            winapi::um::libloaderapi::FreeLibrary(handle);
+    if let Ok(hwnd) = window.hwnd() {
+        let raw_hwnd = hwnd.0 as *mut c_void;
+        match dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND) {
+            Ok(()) => eprintln!("[FromZero] ✓ Native DWM window rounding enabled"),
+            Err(e) => eprintln!("[FromZero] DWM rounding failed: {e}"),
+        }
+        match dwm::set_dwm_attribute(raw_hwnd, DWMWA_BORDER_COLOR, DWM_COLOR_NONE) {
+            Ok(()) => eprintln!("[FromZero] ✓ Native DWM border color removed"),
+            Err(e) => eprintln!("[FromZero] DWM border color removal failed: {e}"),
         }
     }
 }

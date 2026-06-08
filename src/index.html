@@ -9,43 +9,7 @@
   </head>
 
   <body>
-    <!-- Apple-style Liquid Glass SVG Filter (ported from rdev/liquid-glass-react) -->
-    <svg class="svg-filters" style="position: absolute; width: 0; height: 0; pointer-events: none;" aria-hidden="true">
-      <defs>
-        <!-- Expanded region to 180% to accommodate up to 60px stdDeviation blur without clipping -->
-        <filter id="liquid-glass-filter" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
-          <!-- 1. Load pre-baked displacement map (SDF-based edge displacement)
-               NOTE: The width/height must match the window dimensions (640x450).
-               Positioned at x="60" y="60" to align with the expanded refraction-bg element. -->
-          <feImage id="displacement-map-image" x="60" y="60" width="640" height="450" result="displacementMap" preserveAspectRatio="none" />
-
-          <!-- 2. Perform background blur inside SVG using edgeMode="duplicate" to prevent boundary seams -->
-          <feGaussianBlur in="SourceGraphic" id="glass-blur-filter" stdDeviation="24" edgeMode="duplicate" result="blurredBG" />
-
-          <!-- 3. Chromatic aberration: displace R, G, B channels of blurredBG independently -->
-          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="70" xChannelSelector="R" yChannelSelector="G" result="displacedR" />
-          <feColorMatrix in="displacedR" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="r" />
-
-          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="66" xChannelSelector="R" yChannelSelector="G" result="displacedG" />
-          <feColorMatrix in="displacedG" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="g" />
-
-          <feDisplacementMap in="blurredBG" in2="displacementMap" scale="62" xChannelSelector="R" yChannelSelector="G" result="displacedB" />
-          <feColorMatrix in="displacedB" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="b" />
-
-          <!-- 4. Composite the color-separated channels back together -->
-          <feBlend in="r" in2="g" mode="screen" result="rg" />
-          <feBlend in="rg" in2="b" mode="screen" result="chromaticResult" />
-
-          <!-- 5. Soften the chromatic aberration -->
-          <feGaussianBlur in="chromaticResult" stdDeviation="0.5" result="softenedChromatic" />
-
-          <!-- 6. Mask the entire final output with the displacement map's alpha channel to clip to rounded corners -->
-          <feComposite in="softenedChromatic" in2="displacementMap" operator="in" />
-        </filter>
-      </defs>
-    </svg>
-
-    <div class="launcher-container no-refraction" id="launcher-container">
+    <div class="launcher-container" id="launcher-container">
       <!-- Background ambient orbs -->
       <div class="liquid-bg">
         <div class="orb orb-1"></div>
@@ -54,31 +18,24 @@
         <div class="orb orb-4"></div>
       </div>
 
-      <!-- Glass backdrop blur layer -->
+      <!-- Glass tint layer — color tone + saturation over DWM Acrylic blur -->
       <div class="glass-blur-layer"></div>
 
-      <!-- Real-time desktop background simulation for refraction -->
-      <div class="refraction-bg" id="refraction-bg"></div>
-
-      <!-- Liquid Glass: SVG filter for edge refraction applied directly on liquid-bg -->
-      <!-- Dynamic border highlight layer 1 (screen blend) -->
+      <!-- Liquid Glass: border highlight layers -->
       <div class="glass-border glass-border-1"></div>
-
-      <!-- Dynamic border highlight layer 2 (overlay blend — brighter specular) -->
       <div class="glass-border glass-border-2"></div>
 
-      <!-- Specular highlight that follows cursor -->
-      <div class="specular-highlight"></div>
-
-      <!-- 搜索输入区域 -->
-      <header class="search-bar">
+      <!-- Content wrapper -->
+      <div class="content-wrapper">
+        <!-- 搜索输入区域 -->
+        <header class="search-bar">
         <span class="search-icon" id="search-indicator">🔍</span>
         <div class="search-input-wrapper">
           <input
             type="text"
             id="search-input"
             class="search-input"
-            placeholder="搜索应用、系统命令... 或输入 'g 搜索词'，'b 搜索词'"
+            placeholder="搜索应用、'f 文件名' 搜文件、'C:\' 浏览目录"
             autocomplete="off"
             spellcheck="false"
             autofocus
@@ -91,22 +48,31 @@
 
       <!-- 搜索结果/快捷展示区域 -->
       <main class="results-area" id="results-area">
-        <div class="welcome-screen" id="welcome-screen">
-          <h2 class="welcome-title">常用应用</h2>
-          <div class="recent-grid" id="recent-grid"></div>
+        <div class="results-left-col" id="results-left-col">
+          <div class="welcome-screen" id="welcome-screen">
+            <h2 class="welcome-title">常用应用</h2>
+            <div class="recent-grid" id="recent-grid"></div>
+          </div>
+          <div id="results-list" style="display: none;"></div>
         </div>
-        <div id="results-list" style="display: none;"></div>
+        <div class="results-right-col" id="preview-panel">
+          <div class="preview-header" id="preview-header"></div>
+          <div class="preview-meta" id="preview-meta"></div>
+          <div class="preview-content" id="preview-content"></div>
+        </div>
       </main>
 
       <!-- 底部状态指示栏 -->
       <footer class="footer">
-        <div class="footer-status" id="footer-status">已加载 0 个应用</div>
+        <div class="footer-status" id="footer-status">v0.1.6 · 已加载 0 个应用</div>
         <div class="footer-shortcuts">
           <span><span class="key-badge">↑↓</span> 选择</span>
           <span><span class="key-badge">Enter</span> 打开</span>
+          <span><span class="key-badge">f</span> 搜文件</span>
           <span><span class="key-badge">Esc</span> 隐藏</span>
         </div>
       </footer>
+      </div> <!-- /content-wrapper -->
 
       <!-- 设置悬浮面板 -->
       <div class="modal-overlay" id="settings-overlay">
@@ -159,29 +125,11 @@
 
           <div class="tab-panel" id="panel-glass">
             <div class="settings-group">
-              <label class="settings-label" title="毛玻璃背景的模糊程度 (backdrop-filter: blur)">玻璃模糊: <span id="val-glass-blur">24</span>px</label>
-              <input type="range" class="settings-slider" id="slider-glass-blur" min="0" max="60" value="24" />
+              <label class="settings-label" title="毛玻璃背景的模糊程度 (CSS backdrop-filter blur)">玻璃模糊: <span id="val-glass-blur">8</span>px</label>
+              <input type="range" class="settings-slider" id="slider-glass-blur" min="0" max="30" value="8" />
             </div>
 
-            <div class="settings-group">
-              <label class="settings-label" title="边缘光线弯曲折射的幅度 (feDisplacementMap scale)">折射幅度 (Scale): <span id="val-disp-scale">70</span></label>
-              <input type="range" class="settings-slider" id="slider-disp-scale" min="0" max="150" value="70" />
-            </div>
 
-            <div class="settings-group">
-              <label class="settings-label" title="边缘产生折射效果的宽度（像素）">折射宽度 (Edge): <span id="val-disp-edge">20</span>px</label>
-              <input type="range" class="settings-slider" id="slider-disp-edge" min="5" max="40" value="20" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="法线贴图最大弯曲拉伸系数 (displacementStrength)">折射强度 (Strength): <span id="val-disp-strength">0.45</span></label>
-              <input type="range" class="settings-slider" id="slider-disp-strength" min="0.1" max="1.0" step="0.05" value="0.45" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="跟随光标高光斑点的不透明度 (opacity)">高光强度 (Specular): <span id="val-specular-opacity">0.60</span></label>
-              <input type="range" class="settings-slider" id="slider-specular-opacity" min="0.0" max="1.0" step="0.05" value="0.60" />
-            </div>
 
             <div class="settings-group">
               <label class="settings-label" title="毛玻璃容器边缘反光边框亮度比例">边框强度 (Border): <span id="val-border-opacity">0.60</span></label>

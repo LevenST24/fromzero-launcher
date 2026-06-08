@@ -44,11 +44,7 @@ let settings = {};
 
 // Liquid Glass customizable parameters
 let glassSettings = {
-  glassBlur: 24,
-  dispScale: 70,
-  dispEdge: 20,
-  dispStrength: 0.45,
-  specularOpacity: 0.60,
+  glassBlur: 8,
   borderOpacity: 0.60
 };
 let backupGlassSettings = null;
@@ -56,12 +52,17 @@ let backupGlassSettings = null;
 // Search debounce and query race condition tracking
 let lastSearchId = 0;
 let searchDebounceTimeout = null;
+let setBlurTimeout = null;
 
 // Focus management: timestamp of last show (for debounce)
 let lastShowTime = 0;
 
 // IME Composition state tracking
 let isComposing = false;
+
+// File explorer state
+let currentDirPath = null;
+let previewDebounceTimeout = null;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -97,10 +98,7 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-// Animation loop state
-let springAnimationId = null;
-let startSprings = null;
-let stopSprings = null;
+const APP_VERSION = "v0.1.6";
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
@@ -108,19 +106,17 @@ let stopSprings = null;
 
 window.addEventListener("focus", () => {
   lastShowTime = Date.now();
-  updateRefractionBackground();
-  if (startSprings) startSprings();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.remove("blurred");
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
+      searchInput.select();
     }
   }, 50);
 });
 
 window.addEventListener("blur", () => {
-  if (stopSprings) stopSprings();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.add("blurred");
 
@@ -161,192 +157,48 @@ function clearChildren(el) {
   }
 }
 
-// =============================================
-// Generate Displacement Map via Canvas
-// Creates an SDF-based edge displacement map for the SVG feDisplacementMap filter.
-// Pixels near edges have non-neutral (0.5, 0.5) values → displacement.
-// Center pixels are neutral → no distortion.
-// This is ported from rdev/liquid-glass-react's shader-utils.
-// =============================================
-function generateDisplacementMap(width, height, borderRadius, edgeWidthParam, displacementStrengthParam) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
 
-  const r = borderRadius;
-  const edgeWidth = edgeWidthParam || 20; // pixels from edge where displacement is visible
-  const displacementStrength = displacementStrengthParam !== undefined ? displacementStrengthParam : 0.45; // max displacement as fraction of 0.5 range
-
-  const imageData = ctx.createImageData(width, height);
-  const pixels = imageData.data;
-
-  // Helper: Inigo Quilez Rounded Box SDF
-  function sdRoundBox(x, y, w, h, radius) {
-    const px = x - w / 2;
-    const py = y - h / 2;
-    const qx = Math.abs(px) - w / 2 + radius;
-    const qy = Math.abs(py) - h / 2 + radius;
-    const maxQ = Math.max(qx, qy);
-    const minPart = Math.min(maxQ, 0.0);
-    const maxQx0 = Math.max(qx, 0.0);
-    const maxQy0 = Math.max(qy, 0.0);
-    const lenPart = Math.sqrt(maxQx0 * maxQx0 + maxQy0 * maxQy0);
-    return minPart + lenPart - radius;
-  }
-
-  // Helper: Normal pointing outward
-  function getRoundBoxNormal(x, y, w, h, radius) {
-    const px = x - w / 2;
-    const py = y - h / 2;
-    const signX = px >= 0 ? 1 : -1;
-    const signY = py >= 0 ? 1 : -1;
-    const qx = Math.abs(px) - w / 2 + radius;
-    const qy = Math.abs(py) - h / 2 + radius;
-
-    if (qx > 0 || qy > 0) {
-      const qxPlus = Math.max(qx, 0);
-      const qyPlus = Math.max(qy, 0);
-      const len = Math.sqrt(qxPlus * qxPlus + qyPlus * qyPlus) || 1;
-      return {
-        x: (qxPlus / len) * signX,
-        y: (qyPlus / len) * signY
-      };
-    } else {
-      if (qx > qy) {
-        return { x: signX, y: 0 };
-      } else {
-        return { x: 0, y: signY };
-      }
-    }
-  }
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const pi = (y * width + x) * 4;
-      const sdfValue = sdRoundBox(x, y, width, height, r);
-      const dist = Math.abs(sdfValue);
-
-      // 1. Calculate displacement (R & G channels)
-      let dispX = 0.5;
-      let dispY = 0.5;
-
-      if (dist < edgeWidth) {
-        const t = Math.max(0, 1 - dist / edgeWidth);
-        const smoothT = t * t * (3 - 2 * t); // smoothstep
-        const normal = getRoundBoxNormal(x, y, width, height, r);
-
-        // Subtract normal to refract inward (avoiding out-of-bounds sampling)
-        dispX = 0.5 - normal.x * displacementStrength * smoothT;
-        dispY = 0.5 - normal.y * displacementStrength * smoothT;
-      }
-
-      pixels[pi] = Math.round(dispX * 255);     // R channel
-      pixels[pi + 1] = Math.round(dispY * 255); // G channel
-      pixels[pi + 2] = 128;                       // B channel (neutral)
-
-      // 2. Calculate antialiased rounded mask (Alpha channel)
-      // sdfValue is negative inside, positive outside the rounded rectangle.
-      // We want a smooth transition from 255 (inside) to 0 (outside) at the boundary.
-      let alpha = 0;
-      if (sdfValue < -1.0) {
-        alpha = 255;
-      } else if (sdfValue > 1.0) {
-        alpha = 0;
-      } else {
-        // Linear transition over a 2px boundary (-1.0 to 1.0)
-        alpha = Math.round((1.0 - sdfValue) / 2.0 * 255);
-      }
-      pixels[pi + 3] = alpha;
-    }
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-  return canvas;
-}
 
 // Helper: Apply visual configurations to DOM/CSS and SVG filter scales in real time
 function applyVisualSettings(config) {
   const container = document.getElementById("launcher-container");
   if (!container) return;
 
-  container.style.setProperty("--glass-blur", `${config.glassBlur}px`);
-  container.style.setProperty("--specular-opacity", config.specularOpacity);
-
-  // Border opacities are scaled based on the single borderOpacity slider value
+  // Border opacities (static angle, no cursor tracking)
   const b1 = (config.borderOpacity * 0.3).toFixed(3);
   const b2 = (config.borderOpacity * 0.2).toFixed(3);
   container.style.setProperty("--border1-opacity", b1);
   container.style.setProperty("--border2-opacity", b2);
 
-  // Update SVG feDisplacementMap scale attribute in real time
-  const dispMaps = document.querySelectorAll("feDisplacementMap");
-  if (dispMaps.length >= 3) {
-    const s = config.dispScale;
-    dispMaps[0].setAttribute("scale", Math.max(0, s));
-    dispMaps[1].setAttribute("scale", Math.max(0, s - 4));
-    dispMaps[2].setAttribute("scale", Math.max(0, s - 8));
-  }
-
-  // Update SVG feGaussianBlur stdDeviation attribute in real time
-  const glassBlurFilter = document.getElementById("glass-blur-filter");
-  if (glassBlurFilter) {
-    glassBlurFilter.setAttribute("stdDeviation", config.glassBlur);
-  }
-}
-
-// Helper: Fetch background Base64 image from Rust state and update style
-async function updateRefractionBackground() {
-  const container = document.getElementById("launcher-container");
-  try {
-    const base64 = await invoke("get_background");
-    const refractionBg = document.getElementById("refraction-bg");
-    if (refractionBg && base64 && base64.trim() !== "") {
-      refractionBg.style.backgroundImage = `url("${base64}")`;
-      if (container) {
-        container.classList.remove("no-refraction");
-      }
-      console.log("[FromZero] ✓ Refraction background updated");
+  // === Glass tint layer: opacity controlled by glassBlur slider ===
+  // Higher glassBlur = more opaque tint = more frosted look (covers DWM Acrylic blur more).
+  // Lower glassBlur = more transparent tint = DWM Acrylic blur more visible.
+  const glassBlurLayer = document.querySelector('.glass-blur-layer');
+  if (glassBlurLayer) {
+    const isDark = !document.documentElement.hasAttribute('data-theme') ||
+                   document.documentElement.getAttribute('data-theme') === 'dark';
+    // glassBlur 0→0.01 (nearly invisible), 1→0.018, 8→0.074, 30→0.25
+    // Low multiplier ensures smooth transition from transparent(0) to slightly frosted(1)
+    const tintOpacity = Math.max(0.01, config.glassBlur * 0.008 + 0.01).toFixed(3);
+    if (isDark) {
+      glassBlurLayer.style.backgroundColor = `rgba(18, 18, 24, ${tintOpacity})`;
     } else {
-      if (container) {
-        container.classList.add("no-refraction");
-      }
-      console.warn("[FromZero] Captured background is empty, using fallback");
+      glassBlurLayer.style.backgroundColor = `rgba(240, 240, 245, ${tintOpacity})`;
     }
-  } catch (e) {
-    if (container) {
-      container.classList.add("no-refraction");
-    }
-    console.warn("[FromZero] Failed to get captured background, using fallback:", e);
   }
-}
 
-// Helper: Debounce displacement map regeneration during slider moves to ensure 60fps fluidity
-let canvasDebounceTimeout = null;
-function triggerCanvasRegen(edgeVal, strengthVal) {
-  clearTimeout(canvasDebounceTimeout);
-  canvasDebounceTimeout = setTimeout(() => {
-    try {
-      const feImageEl = document.getElementById("displacement-map-image");
-      if (feImageEl) {
-        const mapCanvas = generateDisplacementMap(640, 450, 16, edgeVal, strengthVal);
-        feImageEl.setAttribute("href", mapCanvas.toDataURL("image/png"));
-        console.log("[FromZero] ✓ Displacement map updated live");
-      }
-    } catch (e) {
-      console.warn("Canvas regeneration error:", e);
-    }
-  }, 40);
+  // Toggle DWM Acrylic: glassBlur=0 → transparent, glassBlur>0 → blurred desktop
+  // Debounced to avoid flooding the Rust backend during slider drag
+  clearTimeout(setBlurTimeout);
+  setBlurTimeout = setTimeout(() => {
+    try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
+  }, 60);
 }
 
 // Helper: Initialize sliders listeners
 function initSliderListeners() {
   const sliders = [
     { id: "slider-glass-blur", valId: "val-glass-blur", key: "glassBlur", isFloat: false },
-    { id: "slider-disp-scale", valId: "val-disp-scale", key: "dispScale", isFloat: false },
-    { id: "slider-disp-edge", valId: "val-disp-edge", key: "dispEdge", isFloat: false, triggerCanvas: true },
-    { id: "slider-disp-strength", valId: "val-disp-strength", key: "dispStrength", isFloat: true, triggerCanvas: true },
-    { id: "slider-specular-opacity", valId: "val-specular-opacity", key: "specularOpacity", isFloat: true },
     { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true }
   ];
 
@@ -363,10 +215,6 @@ function initSliderListeners() {
         // Apply sliders state immediately for live feedback
         const currentConfig = readSlidersState();
         applyVisualSettings(currentConfig);
-
-        if (s.triggerCanvas) {
-          triggerCanvasRegen(currentConfig.dispEdge, currentConfig.dispStrength);
-        }
       });
     }
   });
@@ -376,10 +224,6 @@ function initSliderListeners() {
 function readSlidersState() {
   return {
     glassBlur: parseInt(document.getElementById("slider-glass-blur").value),
-    dispScale: parseInt(document.getElementById("slider-disp-scale").value),
-    dispEdge: parseInt(document.getElementById("slider-disp-edge").value),
-    dispStrength: parseFloat(document.getElementById("slider-disp-strength").value),
-    specularOpacity: parseFloat(document.getElementById("slider-specular-opacity").value),
     borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value)
   };
 }
@@ -388,10 +232,6 @@ function readSlidersState() {
 function syncSlidersToConfig(config) {
   const mappings = [
     { id: "slider-glass-blur", valId: "val-glass-blur", val: config.glassBlur, isFloat: false },
-    { id: "slider-disp-scale", valId: "val-disp-scale", val: config.dispScale, isFloat: false },
-    { id: "slider-disp-edge", valId: "val-disp-edge", val: config.dispEdge, isFloat: false },
-    { id: "slider-disp-strength", valId: "val-disp-strength", val: config.dispStrength, isFloat: true },
-    { id: "slider-specular-opacity", valId: "val-specular-opacity", val: config.specularOpacity, isFloat: true },
     { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true }
   ];
 
@@ -424,30 +264,32 @@ window.addEventListener("DOMContentLoaded", async () => {
       settings = {};
     }
 
-    // Load Liquid Glass parameters from localStorage
-    try {
-      const stored = localStorage.getItem("fromzero-liquid-glass");
-      if (stored) {
-        glassSettings = { ...glassSettings, ...JSON.parse(stored) };
-      }
-    } catch (e) {
-      console.warn("Failed to load local glass settings:", e);
+    // Load Liquid Glass parameters from unified settings
+    if (settings.glass_settings) {
+      glassSettings.glassBlur = settings.glass_settings.glass_blur ?? glassSettings.glassBlur;
+      glassSettings.borderOpacity = settings.glass_settings.border_opacity ?? glassSettings.borderOpacity;
     }
     applyVisualSettings(glassSettings);
-    updateRefractionBackground();
+    // Set initial DWM Acrylic state based on glassBlur slider
+    try {
+      await invoke("set_blur", { value: glassSettings.glassBlur });
+    } catch (e) {
+      console.warn("[FromZero] set_blur init failed:", e);
+    }
 
     applyTheme(settings.theme);
     if (shortcutDisplay) shortcutDisplay.textContent = settings.shortcut || "Ctrl+Space";
     if (themeSelect) themeSelect.value = settings.theme || "dark";
+    if (autostartToggle) autostartToggle.checked = settings.autostart || false;
 
-    if (footerStatus) footerStatus.textContent = "正在扫描开始菜单...";
+    if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 正在扫描开始菜单...`;
     try {
       appItems = await invoke("scan_apps");
-      if (footerStatus) footerStatus.textContent = `已成功加载 ${appItems.length} 个应用`;
+      if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 已成功加载 ${appItems.length} 个应用`;
       console.log(`[FromZero] Loaded ${appItems.length} apps`);
     } catch (scanError) {
       console.error("[FromZero] Scan error:", scanError);
-      if (footerStatus) footerStatus.textContent = "应用扫描失败，请检查日志";
+      if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 应用扫描失败，请检查日志`;
     }
 
     renderRecentApps();
@@ -492,172 +334,16 @@ window.addEventListener("DOMContentLoaded", async () => {
     initSliderListeners();
 
     // =============================================
-    // Displacement Map Initialization
-    // Load pre-baked displacement map data into SVG feImage
+    // Tauri window event listeners
     // =============================================
-    try {
-      // The displacement map is a PNG base64 data URL stored inline
-      const feImageEl = document.getElementById("displacement-map-image");
-      if (feImageEl) {
-        // Generate the displacement map via Canvas (SDF-based edge displacement)
-        const mapCanvas = generateDisplacementMap(640, 450, 16, glassSettings.dispEdge, glassSettings.dispStrength);
-        feImageEl.setAttribute("href", mapCanvas.toDataURL("image/png"));
-        console.log("[FromZero] ✓ Displacement map generated and loaded");
-      }
-    } catch (e) {
-      console.warn("[FromZero] Displacement map init failed, refraction disabled:", e);
-    }
-
-    // =============================================
-    // Specular Highlight + Border Highlight — cursor-following light
-    // =============================================
-    const container = document.getElementById("launcher-container");
-    if (container) {
-      // Spring state for specular highlight + border highlight
-      let targetMouseX = 0;
-      let targetMouseY = 0;
-      let isHovered = false;
-
-      // Specular Highlight Spring (snappy light reflection)
-      let shX = -999, shY = -999;
-      let shVx = 0, shVy = 0;
-      const shStiffness = 0.12;
-      const shDamping = 0.16;
-      let isSpringRunning = false;
-
-      // Border highlight angle (smooth interpolation, no spring needed)
-      let currentBorderAngle = 135;
-      let targetBorderAngle = 135;
-
-      function updateSprings() {
-        if (!document.getElementById("launcher-container")) {
-          springAnimationId = null;
-          isSpringRunning = false;
-          return;
-        }
-
-        let targetShX = -999;
-        let targetShY = -999;
-
-        if (isHovered) {
-          targetShX = targetMouseX;
-          targetShY = targetMouseY;
-        }
-
-        let needsUpdate = false;
-
-        // Update Specular Highlight Spring only
-        if (targetShX === -999) {
-          if (shX !== -999) {
-            shX = -999;
-            shY = -999;
-            shVx = 0;
-            shVy = 0;
-            needsUpdate = true; // One final frame to write offscreen variables
-          }
-        } else {
-          if (shX === -999) { shX = targetShX; shY = targetShY; }
-          const dx = targetShX - shX;
-          const dy = targetShY - shY;
-
-          // Only animate if the spring has not settled
-          if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05 || Math.abs(shVx) > 0.05 || Math.abs(shVy) > 0.05) {
-            const ax = dx * shStiffness;
-            const ay = dy * shStiffness;
-            shVx = (shVx + ax) * (1 - shDamping);
-            shVy = (shVy + ay) * (1 - shDamping);
-            shX += shVx;
-            shY += shVy;
-            needsUpdate = true;
-          } else {
-            // Settle exactly to target coordinates
-            shX = targetShX;
-            shY = targetShY;
-            shVx = 0;
-            shVy = 0;
-          }
-        }
-
-        // Render CSS coordinates for specular highlight
-        if (shX === -999) {
-          container.style.setProperty("--mx", `-999px`);
-          container.style.setProperty("--my", `-999px`);
-        } else {
-          container.style.setProperty("--mx", `${shX}px`);
-          container.style.setProperty("--my", `${shY}px`);
-        }
-
-        // Update border highlight angle (smooth interpolation)
-        const angleDiff = targetBorderAngle - currentBorderAngle;
-        if (Math.abs(angleDiff) > 0.1) {
-          currentBorderAngle += angleDiff * 0.08;
-          container.style.setProperty("--border-angle", `${currentBorderAngle}deg`);
-        }
-
-        if (needsUpdate) {
-          springAnimationId = requestAnimationFrame(updateSprings);
-        } else {
-          springAnimationId = null;
-          isSpringRunning = false;
-        }
-      }
-
-      startSprings = () => {
-        if (!springAnimationId) {
-          isSpringRunning = true;
-          springAnimationId = requestAnimationFrame(updateSprings);
-        }
-      };
-
-      stopSprings = () => {
-        if (springAnimationId) {
-          cancelAnimationFrame(springAnimationId);
-          springAnimationId = null;
-        }
-      };
-
-      // Start the animation loop
-      startSprings();
-
-      container.addEventListener("mouseenter", () => {
-        isHovered = true;
-      });
-
-      container.addEventListener("mousemove", (e) => {
-        const rect = container.getBoundingClientRect();
-        targetMouseX = e.clientX - rect.left;
-        targetMouseY = e.clientY - rect.top;
-        isHovered = true;
-
-        // Calculate border highlight angle based on cursor position relative to center
-        const cx = rect.width / 2;
-        const cy = rect.height / 2;
-        const dx = targetMouseX - cx;
-        const dy = targetMouseY - cy;
-        // Convert to angle (0-360), offset so top-left is default
-        targetBorderAngle = (Math.atan2(dy, dx) * 180 / Math.PI + 360 + 90) % 360;
-
-        if (!isSpringRunning) {
-          startSprings();
-        }
-      });
-
-      container.addEventListener("mouseleave", () => {
-        isHovered = false;
-      });
-    }
-
     appWindow.listen("tauri://focus", () => {
       lastShowTime = Date.now();
-      updateRefractionBackground();
       if (searchInput) searchInput.focus();
-      if (startSprings) startSprings();
       const container = document.getElementById("launcher-container");
       if (container) container.classList.remove("blurred");
     });
 
     appWindow.listen("tauri://blur", () => {
-      if (stopSprings) stopSprings();
       const container = document.getElementById("launcher-container");
       if (container) container.classList.add("blurred");
     });
@@ -693,7 +379,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     console.log("[FromZero] ✓ Frontend initialization complete");
   } catch (error) {
     console.error("[FromZero] Initialization error:", error);
-    if (footerStatus) footerStatus.textContent = "初始化失败，请重试";
+    if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 初始化失败，请重试`;
   }
 });
 
@@ -729,7 +415,7 @@ function renderRecentApps() {
 }
 
 function createIconElement(iconPath, cssClass) {
-  if (!iconPath || iconPath === "⚡" || iconPath === "📂" || iconPath === "🌐") {
+  if (!iconPath || /^[\u{1F300}-\u{1FAF8}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}⚡📂🌐📁🖼️📝💻📦📄🎵🎬]/u.test(iconPath)) {
     const span = document.createElement("span");
     span.className = (cssClass || "") + " emoji";
     span.textContent = iconPath || "📱";
@@ -766,6 +452,9 @@ async function handleSearch() {
   if (!searchInput) return;
   const query = searchInput.value;
   selectedIndex = 0;
+  filteredItems = [];
+  currentDirPath = null;
+  hidePreview();
   const currentSearchId = ++lastSearchId;
   if (query.trim() === "") {
     if (welcomeScreen) welcomeScreen.style.display = "block";
@@ -788,17 +477,81 @@ async function handleSearch() {
       data: cmd.key
     }));
     renderResults();
-  } else if (query.startsWith("/") || query.startsWith("\\\\") || /^[a-zA-Z]:\\/.test(query)) {
+  // File search mode: "f keyword" or "find keyword"
+  } else if (/^(?:f|find)\s+/i.test(query)) {
+    const fileSearchMatch = query.match(/^(?:f|find)\s+(.+)$/i);
+    if (fileSearchMatch) {
+      const fileQuery = fileSearchMatch[1].trim();
+      if (searchIndicator) searchIndicator.textContent = "🔍";
+      try {
+        const files = await invoke("search_files", { query: fileQuery });
+        if (currentSearchId !== lastSearchId) return;
+        filteredItems = files.slice(0, 20).map(f => ({
+          type: f.is_dir ? "dir" : "file",
+          title: f.name,
+          subtitle: f.path,
+          icon: getFileIcon(f),
+          badge: f.is_dir ? "文件夹" : f.extension.toUpperCase() || "文件",
+          data: f
+        }));
+      } catch (e) {
+        console.error("[FromZero] File search error:", e);
+        filteredItems = [];
+      }
+      renderResults();
+      if (filteredItems.length > 0) triggerPreview(filteredItems[0]);
+      else hidePreview();
+      return;
+    }
+  } else if (query.startsWith("/") || query.startsWith("\\\\") || /^[a-zA-Z]:\\/.test(query) || /^[a-zA-Z]:$/.test(query)) {
     if (searchIndicator) searchIndicator.textContent = "📂";
-    filteredItems = [{
-      type: "folder",
-      title: `快速打开文件夹: "${query}"`,
-      subtitle: "使用 Windows 资源管理器呼出",
-      icon: "📂",
-      badge: "路径",
-      data: query
-    }];
+    // Directory navigation mode
+    let dirPath = query.replace(/\//g, "\\");
+    // Add trailing backslash if just a drive letter like C:
+    if (/^[a-zA-Z]:$/.test(dirPath)) dirPath += "\\";
+    let parentDir = dirPath;
+    let searchInDir = "";
+    // If the path doesn't end with \ and last segment doesn't exist as a directory,
+    // treat the last segment as a search filter within the parent directory
+    if (!dirPath.endsWith("\\")) {
+      const lastSep = dirPath.lastIndexOf("\\");
+      if (lastSep > 0) {
+        const possibleParent = dirPath.substring(0, lastSep + 1);
+        const possibleFilter = dirPath.substring(lastSep + 1);
+        parentDir = possibleParent;
+        searchInDir = possibleFilter;
+      }
+    }
+    currentDirPath = parentDir;
+    try {
+      const files = await invoke("list_directory", { path: parentDir, searchTerm: searchInDir });
+      if (currentSearchId !== lastSearchId) return;
+      filteredItems = files.map(f => ({
+        type: f.is_dir ? "dir" : "file",
+        title: f.name,
+        subtitle: f.path,
+        icon: getFileIcon(f),
+        badge: f.is_dir ? "文件夹" : (f.extension ? f.extension.toUpperCase() : "文件"),
+        data: f
+      }));
+    } catch (e) {
+      console.error("[FromZero] Directory listing error:", e);
+      filteredItems = [{
+        type: "folder",
+        title: `打开文件夹: "${dirPath}"`,
+        subtitle: e.toString(),
+        icon: "📂",
+        badge: "错误",
+        data: dirPath
+      }];
+    }
     renderResults();
+    if (filteredItems.length > 0 && (filteredItems[0].type === "file" || filteredItems[0].type === "dir")) {
+      triggerPreview(filteredItems[0]);
+    } else {
+      hidePreview();
+    }
+    return;
   } else {
     const match = query.match(/^([a-zA-Z]+)\s+(.+)$/);
     if (match && settings.web_engines[match[1].toLowerCase()]) {
@@ -846,6 +599,7 @@ async function handleSearch() {
         if (currentSearchId === lastSearchId) filteredItems = [];
       }
       renderResults();
+      hidePreview();
     }
   }
 }
@@ -914,6 +668,9 @@ function updateSelectionVisual() {
       if (i === selectedIndex) {
         items[i].classList.add("selected");
         items[i].scrollIntoView({ block: "nearest" });
+        if (filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir")) {
+          triggerPreview(filteredItems[selectedIndex]);
+        }
       } else {
         items[i].classList.remove("selected");
       }
@@ -943,6 +700,16 @@ async function executeItemAction(item) {
         }
       }
       await invoke("execute_sys_command", { command: item.data });
+    } else if (item.type === "dir") {
+      // Always drill down into directories
+      const newPath = item.data.path.endsWith("\\") ? item.data.path : item.data.path + "\\";
+      if (searchInput) {
+        searchInput.value = newPath;
+        handleSearch();
+      }
+      return; // Don't hide the window
+    } else if (item.type === "file") {
+      await invoke("open_file", { path: item.data.path });
     } else if (item.type === "folder") {
       await invoke("open_folder", { path: item.data });
     } else if (item.type === "web") {
@@ -957,7 +724,7 @@ async function executeItemAction(item) {
     handleSearch();
   } catch (error) {
     console.error("[FromZero] Action error:", error);
-    if (footerStatus) footerStatus.textContent = `执行失败: ${error}`;
+    if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 执行失败: ${error}`;
   }
 }
 
@@ -993,12 +760,29 @@ async function handleGlobalKeys(e) {
         updateSelectionVisual();
       }
     }
+  } else if (e.key === "Backspace" && currentDirPath && searchInput && searchInput.value === currentDirPath) {
+    // Go up one directory level
+    e.preventDefault();
+    const parentPath = currentDirPath.replace(/\\[^\\]+\\$/, "\\");
+    if (parentPath !== currentDirPath && parentPath.length >= 3) {
+      searchInput.value = parentPath;
+      handleSearch();
+    }
   } else if (e.key === "Enter") {
     e.preventDefault();
     if (searchDebounceTimeout && selectedIndex === 0) {
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
+    }
+    if (e.shiftKey && filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir")) {
+      // Open parent directory in Explorer
+      const filePath = filteredItems[selectedIndex].data.path;
+      const parentDir = filePath.substring(0, filePath.lastIndexOf("\\"));
+      if (parentDir) {
+        try { await invoke("open_folder", { path: parentDir }); } catch (err) { console.warn(err); }
+      }
+      return;
     }
     if (filteredItems.length > 0 && filteredItems[selectedIndex]) {
       executeItemAction(filteredItems[selectedIndex]);
@@ -1059,7 +843,6 @@ function closeSettings() {
   // Restore backed up visual parameters if canceled
   if (backupGlassSettings) {
     applyVisualSettings(backupGlassSettings);
-    triggerCanvasRegen(backupGlassSettings.dispEdge, backupGlassSettings.dispStrength);
     backupGlassSettings = null;
   }
 
@@ -1074,11 +857,12 @@ async function saveSettingsConfig() {
 
   // Commit glass settings
   glassSettings = readSlidersState();
-  try {
-    localStorage.setItem("fromzero-liquid-glass", JSON.stringify(glassSettings));
-  } catch (e) {
-    console.warn("Failed to save glass settings to localStorage:", e);
-  }
+
+  // Glass settings are saved as part of the unified settings object
+  settings.glass_settings = {
+    glass_blur: glassSettings.glassBlur,
+    border_opacity: glassSettings.borderOpacity
+  };
 
   // Clean backup so closeSettings does not revert them
   backupGlassSettings = null;
@@ -1094,7 +878,7 @@ async function saveSettingsConfig() {
     }
   } catch (error) {
     console.error("[FromZero] Save settings error:", error);
-    if (footerStatus) footerStatus.textContent = `保存设置失败: ${error}`;
+    if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 保存设置失败: ${error}`;
   }
 }
 
@@ -1168,4 +952,132 @@ function recordShortcut(e) {
     if (shortcutDisplay) shortcutDisplay.textContent = parts.join("+");
     toggleRecordingShortcut();
   }
+}
+
+// =============================================
+// File Explorer: Helper Functions
+// =============================================
+
+// Format file size to human-readable string
+function formatFileSize(bytes) {
+  if (bytes === 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+// Format Unix timestamp to locale date string
+function formatDate(unixSec) {
+  if (!unixSec) return "—";
+  return new Date(unixSec * 1000).toLocaleString("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit"
+  });
+}
+
+// Get file icon emoji based on extension
+function getFileIcon(item) {
+  if (item.is_dir) return "📁";
+  const ext = item.extension || "";
+  const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
+  const docExts = ["doc", "docx", "pdf", "ppt", "pptx", "xls", "xlsx"];
+  const codeExts = ["js", "ts", "rs", "py", "c", "cpp", "java", "go", "rb", "php", "html", "css"];
+  const archiveExts = ["zip", "rar", "7z", "tar", "gz"];
+  if (imageExts.includes(ext)) return "🖼️";
+  if (docExts.includes(ext)) return "📝";
+  if (codeExts.includes(ext)) return "💻";
+  if (archiveExts.includes(ext)) return "📦";
+  if (ext === "txt" || ext === "md" || ext === "log") return "📄";
+  if (ext === "mp3" || ext === "wav" || ext === "flac") return "🎵";
+  if (ext === "mp4" || ext === "avi" || ext === "mkv") return "🎬";
+  return "📄";
+}
+
+// Show preview for selected file/folder
+async function showPreview(item) {
+  const previewPanel = document.getElementById("preview-panel");
+  const previewHeader = document.getElementById("preview-header");
+  const previewMeta = document.getElementById("preview-meta");
+  const previewContent = document.getElementById("preview-content");
+  if (!previewPanel || !previewHeader || !previewMeta || !previewContent) return;
+
+  // Only show preview for file/directory items
+  if (!item || (item.type !== "file" && item.type !== "dir")) {
+    previewPanel.classList.remove("active");
+    return;
+  }
+
+  previewPanel.classList.add("active");
+  previewHeader.textContent = item.data.name || "";
+  previewMeta.textContent = "加载中...";
+  clearChildren(previewContent);
+
+  try {
+    const preview = await invoke("get_file_preview", { path: item.data.path });
+    // Update meta
+    const metaParts = [];
+    if (preview.size > 0) metaParts.push(formatFileSize(preview.size));
+    if (preview.modified) metaParts.push(formatDate(preview.modified));
+    previewMeta.textContent = metaParts.join(" · ") || "";
+
+    // Render content
+    clearChildren(previewContent);
+    if (preview.file_type === "image" && preview.content) {
+      const img = document.createElement("img");
+      img.src = preview.content;
+      img.alt = item.data.name;
+      img.loading = "lazy";
+      previewContent.appendChild(img);
+    } else if (preview.file_type === "text" && preview.content) {
+      const pre = document.createElement("pre");
+      pre.textContent = preview.content;
+      previewContent.appendChild(pre);
+    } else if (preview.file_type === "folder" && preview.content) {
+      const ul = document.createElement("ul");
+      ul.className = "folder-list";
+      preview.content.split("\n").forEach(line => {
+        if (line.trim()) {
+          const li = document.createElement("li");
+          li.textContent = line;
+          ul.appendChild(li);
+        }
+      });
+      previewContent.appendChild(ul);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "preview-empty";
+      if (preview.file_type === "image") {
+        empty.textContent = "图片过大，无法预览";
+      } else {
+        empty.textContent = "不可直接预览";
+      }
+      previewContent.appendChild(empty);
+    }
+  } catch (e) {
+    previewMeta.textContent = "预览失败";
+    clearChildren(previewContent);
+    const errDiv = document.createElement("div");
+    errDiv.className = "preview-empty";
+    errDiv.textContent = "无法加载预览";
+    previewContent.appendChild(errDiv);
+  }
+}
+
+// Hide preview panel
+function hidePreview() {
+  const previewPanel = document.getElementById("preview-panel");
+  if (previewPanel) previewPanel.classList.remove("active");
+}
+
+// Debounced preview update when selection changes
+function triggerPreview(item) {
+  clearTimeout(previewDebounceTimeout);
+  previewDebounceTimeout = setTimeout(() => {
+    showPreview(item);
+  }, 150);
 }

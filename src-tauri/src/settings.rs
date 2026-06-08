@@ -6,9 +6,30 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GlassSettings {
+    #[serde(default = "default_glass_blur")]
+    pub glass_blur: i32,
+    #[serde(default = "default_border_opacity")]
+    pub border_opacity: f64,
+}
+
+fn default_glass_blur() -> i32 { 8 }
+fn default_border_opacity() -> f64 { 0.60 }
+
+impl Default for GlassSettings {
+    fn default() -> Self {
+        Self {
+            glass_blur: default_glass_blur(),
+            border_opacity: default_border_opacity(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
     #[serde(default = "default_shortcut")]
-    pub shortcut: String,    #[serde(default = "default_theme")]
+    pub shortcut: String,
+    #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_web_engines")]
     pub web_engines: HashMap<String, String>,
@@ -16,6 +37,8 @@ pub struct Settings {
     pub recent_apps: Vec<String>,
     #[serde(default = "default_autostart")]
     pub autostart: bool,
+    #[serde(default)]
+    pub glass_settings: GlassSettings,
 }
 
 fn default_shortcut() -> String {
@@ -47,6 +70,7 @@ impl Default for Settings {
             web_engines: default_web_engines(),
             recent_apps: Vec::new(),
             autostart: default_autostart(),
+            glass_settings: GlassSettings::default(),
         }
     }
 }
@@ -174,7 +198,7 @@ mod tests {
     #[test]
     fn test_settings_default_values() {
         let settings = Settings::default();
-        assert_eq!(settings.shortcut, "Alt+Space");
+        assert_eq!(settings.shortcut, "Ctrl+Space");
         assert_eq!(settings.theme, "dark");
         assert!(!settings.autostart);
         assert!(settings.recent_apps.is_empty());
@@ -198,7 +222,7 @@ mod tests {
         // When fields are missing, serde defaults should fill them in
         let json = "{}";
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(settings.shortcut, "Alt+Space");
+        assert_eq!(settings.shortcut, "Ctrl+Space");
         assert_eq!(settings.theme, "dark");
         assert!(!settings.autostart);
     }

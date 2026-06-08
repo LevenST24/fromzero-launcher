@@ -80,60 +80,64 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
   background: transparent;
   color: var(--text-primary);
   box-shadow: 0 0 0 0.5px var(--border-subtle);
-  /* Force GPU rendering composite layers context for correct rounded corner clipping */
   transform: translate3d(0, 0, 0);
   will-change: transform;
   isolation: isolate;
-  /* CSS variables for dynamic border highlight (set by JS) */
+  display: flex;
+  flex-direction: column;
+  /* Static border angle — no cursor tracking */
   --border-angle: 135deg;
-  --border-highlight-x: 0;
-  --border-highlight-y: 0;
-  --mx: -999px;
-  --my: -999px;
+  --border1-opacity: 0.18;
+  --border2-opacity: 0.12;
 }
 
-/* Glass backdrop blur layer (prevents DWM corner leakage by default by disabling backdrop-filter) */
+/* Glass tint layer — color tone + saturation over DWM Acrylic blur.
+   Sits behind content. Opacity controlled by glassBlur slider via JS. */
 .glass-blur-layer {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   border-radius: inherit;
-  background: var(--bg-primary);
+  clip-path: inset(0 round 8px);
+  -webkit-clip-path: inset(0 round 8px);
+  background-color: rgba(18, 18, 24, 0.15);
+  filter: saturate(120%);
 }
 
-/* Fallback fallback mode: Use native backdrop-filter when desktop background capture fails */
-.no-refraction .glass-blur-layer {
-  backdrop-filter: blur(var(--glass-blur, 24px)) saturate(180%) brightness(1.05);
-  -webkit-backdrop-filter: blur(var(--glass-blur, 24px)) saturate(180%) brightness(1.05);
+[data-theme="light"] .glass-blur-layer {
+  background-color: rgba(240, 240, 245, 0.18);
+  filter: saturate(110%);
 }
 
-.launcher-container.blurred.no-refraction .glass-blur-layer {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+/* Blurred state (window inactive): no refraction, saturate only */
+.launcher-container.blurred .glass-blur-layer {
+  filter: saturate(120%);
+}
+
+/* Content wrapper */
+.content-wrapper {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .launcher-container.blurred .liquid-bg {
   filter: none;
 }
 
-/* Deactivated (blurred) state: transition opacity of refraction-bg to 0 to save GPU rendering cost and fade out */
-.launcher-container.blurred .refraction-bg {
-  opacity: 0;
-}
-
 .launcher-container.blurred .glass-border {
   opacity: 0;
 }
 
-.launcher-container.blurred .specular-highlight {
-  opacity: 0;
-}
+
 
 /* =============================================
    LIQUID BG — Ambient background orbs + frosted glass
@@ -145,30 +149,8 @@ body {
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  clip-path: inset(80px round 16px);
-  -webkit-clip-path: inset(80px round 16px);
-}
-
-/* =============================================
-   REFRACTION BG — Captured desktop background layer
-   This layer is expanded to inset: -60px with repeating background to eliminate any boundary seams.
-   ============================================= */
-.refraction-bg {
-  position: absolute;
-  inset: -60px;
-  z-index: 1; /* In front of ambient orbs, behind text UI elements */
-  pointer-events: none;
-  background-size: 640px 450px;
-  background-position: 60px 60px;
-  background-repeat: repeat;
-  /* Apply the SVG displacement map filter (blur is now inside the filter) */
-  filter: url(#liquid-glass-filter);
-  opacity: 0.95;
-  transition: opacity 0.12s ease;
-}
-
-.no-refraction .refraction-bg {
-  display: none !important;
+  clip-path: inset(80px round 8px);
+  -webkit-clip-path: inset(80px round 8px);
 }
 
 .orb {
@@ -287,23 +269,7 @@ body {
   );
 }
 
-/* =============================================
-   SPECULAR HIGHLIGHT — Cursor-following light spot
-   ============================================= */
-.specular-highlight {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  border-radius: inherit;
-  opacity: var(--specular-opacity, 0.6);
-  background: radial-gradient(
-    350px circle at var(--mx) var(--my),
-    rgba(255, 255, 255, 0.07),
-    transparent 60%
-  );
-  transition: opacity 0.3s ease;
-}
+
 
 /* =============================================
    SEARCH BAR
@@ -370,19 +336,121 @@ body {
   position: relative;
   z-index: 10;
   flex: 1;
+  overflow: hidden;
+  padding: 0 16px;
+  display: flex;
+  gap: 0;
+}
+
+/* ── Split Layout: Results + Preview ── */
+.results-left-col {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 16px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
 
-.results-area::-webkit-scrollbar { width: 4px; }
-.results-area::-webkit-scrollbar-thumb {
+.results-left-col::-webkit-scrollbar { width: 4px; }
+.results-left-col::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 4px;
 }
-.results-area::-webkit-scrollbar-track { background: transparent; }
+.results-left-col::-webkit-scrollbar-track { background: transparent; }
+
+.results-right-col {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: width 0.2s ease, opacity 0.15s ease;
+  border-left: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.results-right-col.active {
+  width: 45%;
+  min-width: 200px;
+  opacity: 1;
+  border-left: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  overflow-y: auto;
+}
+
+.preview-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.preview-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.preview-content::-webkit-scrollbar { width: 3px; }
+.preview-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+.preview-content img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 6px;
+  display: block;
+  margin: 0 auto;
+}
+
+.preview-content pre {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+.preview-content .folder-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.preview-content .folder-list li {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.preview-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 20px 0;
+}
 
 /* ── Welcome Screen ── */
 .welcome-screen {
@@ -468,7 +536,7 @@ body {
   padding: 8px 12px;
   border-radius: 10px;
   cursor: pointer;
-  transition: background 0.12s, box-shadow 0.12s;
+  transition: background 0.12s, box-shadow 0.12s, transform 0.1s;
   background: transparent;
   animation: itemSlide 0.2s ease-out both;
   /* Animation delays are now set dynamically via JS */
@@ -801,8 +869,8 @@ body {
 }
 
 .settings-select option {
-  background: #1a1a24;
-  color: #fff;
+  background: var(--modal-bg);
+  color: var(--text-primary);
 }
 
 .settings-engine-display {
