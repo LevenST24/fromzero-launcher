@@ -468,12 +468,35 @@ pub async fn search_files(query: String) -> Result<Vec<FileItem>, String> {
 
         let user_profile = std::env::var("USERPROFILE")
             .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
-        let search_roots = [
+        
+        let mut search_roots = vec![
             format!("{}\\Desktop", user_profile),
             format!("{}\\Documents", user_profile),
             format!("{}\\Downloads", user_profile),
             format!("{}\\Pictures", user_profile),
         ];
+
+        // Detect other local drives on Windows to support search on E:\, D:\, etc.
+        #[cfg(target_os = "windows")]
+        {
+            extern "system" {
+                fn GetLogicalDrives() -> u32;
+            }
+            let system_drive = std::env::var("SystemDrive")
+                .unwrap_or_else(|_| "C:".to_string())
+                .to_uppercase();
+            let mask = unsafe { GetLogicalDrives() };
+            for i in 0..26 {
+                if (mask & (1 << i)) != 0 {
+                    let letter = (b'A' + i) as char;
+                    let drive_prefix = format!("{}:", letter);
+                    // Skip A: and B: (floppy drives), and skip the system drive C: (as we scan specific user folders on C:)
+                    if letter != 'A' && letter != 'B' && drive_prefix != system_drive {
+                        search_roots.push(format!("{}:\\", letter));
+                    }
+                }
+            }
+        }
 
         let mut results: Vec<FileItem> = Vec::new();
         let max_results = 30;

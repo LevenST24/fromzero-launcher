@@ -573,9 +573,17 @@ async function handleSearch() {
     } else {
       if (searchIndicator) searchIndicator.textContent = "🔍";
       try {
-        const results = await invoke("search_apps", { query });
+        const [appResults, fileResults] = await Promise.all([
+          invoke("search_apps", { query }),
+          invoke("search_files", { query }).catch(err => {
+            console.warn("[FromZero] Inline file search error:", err);
+            return [];
+          })
+        ]);
         if (currentSearchId !== lastSearchId) return;
-        filteredItems = results.slice(0, 7).map(app => ({
+
+        // Map apps
+        const appItemsList = appResults.slice(0, 7).map(app => ({
           type: "app",
           title: app.name,
           subtitle: app.target,
@@ -583,6 +591,19 @@ async function handleSearch() {
           badge: "应用",
           data: app
         }));
+
+        // Map files
+        const fileItemsList = fileResults.slice(0, 15).map(f => ({
+          type: f.is_dir ? "dir" : "file",
+          title: f.name,
+          subtitle: f.path,
+          icon: getFileIcon(f),
+          badge: f.is_dir ? (f.name === ".." ? "返回" : "文件夹") : (f.extension ? f.extension.toUpperCase() : "文件"),
+          data: f
+        }));
+
+        filteredItems = [...appItemsList, ...fileItemsList];
+
         if (filteredItems.length < 7) {
           const defaultBaidu = `https://baidu.com/s?wd=${encodeURIComponent(query)}`;
           filteredItems.push({
@@ -599,7 +620,12 @@ async function handleSearch() {
         if (currentSearchId === lastSearchId) filteredItems = [];
       }
       renderResults();
-      hidePreview();
+      
+      if (filteredItems.length > 0 && (filteredItems[0].type === "file" || filteredItems[0].type === "dir")) {
+        triggerPreview(filteredItems[0]);
+      } else {
+        hidePreview();
+      }
     }
   }
 }
@@ -670,6 +696,8 @@ function updateSelectionVisual() {
         items[i].scrollIntoView({ block: "nearest" });
         if (filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir")) {
           triggerPreview(filteredItems[selectedIndex]);
+        } else {
+          hidePreview();
         }
       } else {
         items[i].classList.remove("selected");
