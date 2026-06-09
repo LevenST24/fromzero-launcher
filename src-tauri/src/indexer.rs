@@ -96,6 +96,18 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
 
     let output = run_command_with_timeout(cmd, std::time::Duration::from_secs(10));
 
+    match &output {
+        Ok(out) => {
+            if !out.status.success() {
+                eprintln!("[FromZero] PowerShell process exited with error: {:?}", out.status);
+                eprintln!("[FromZero] Stderr: {}", String::from_utf8_lossy(&out.stderr));
+            }
+        }
+        Err(e) => {
+            eprintln!("[FromZero] Failed to run PowerShell start menu scan: {}", e);
+        }
+    }
+
     if let Ok(out) = output {
         let json_str = String::from_utf8_lossy(&out.stdout);
         let trimmed = json_str.trim();
@@ -103,11 +115,21 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         if !trimmed.is_empty() && trimmed != "[]" {
             // PowerShell might output a single object or an array. We handle both by attempting to parse as array first
             let raw_items: Vec<RawAppItem> = if trimmed.starts_with('[') {
-                serde_json::from_str(trimmed).unwrap_or_default()
+                match serde_json::from_str(trimmed) {
+                    Ok(items) => items,
+                    Err(e) => {
+                        eprintln!("[FromZero] Failed to parse start menu JSON array: {}. Raw JSON length: {}", e, trimmed.len());
+                        Vec::new()
+                    }
+                }
             } else {
-                serde_json::from_str::<RawAppItem>(trimmed)
-                    .map(|item| vec![item])
-                    .unwrap_or_default()
+                match serde_json::from_str::<RawAppItem>(trimmed) {
+                    Ok(item) => vec![item],
+                    Err(e) => {
+                        eprintln!("[FromZero] Failed to parse start menu JSON object: {}. Raw JSON length: {}", e, trimmed.len());
+                        Vec::new()
+                    }
+                }
             };
 
             let cache_dir = match app_handle.path().app_cache_dir() {
