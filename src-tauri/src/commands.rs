@@ -55,10 +55,13 @@ pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: 
 
 #[tauri::command]
 pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<AppItem>, String> {
+    eprintln!("[FromZero] scan_apps command invoked");
     let app_handle_clone = app_handle.clone();
     let apps = tokio::task::spawn_blocking(move || {
         indexer::scan_start_menu(&app_handle_clone)
     }).await.map_err(|e| format!("App scan thread failed: {}", e))?;
+    
+    eprintln!("[FromZero] scan_apps backend returned {} apps", apps.len());
     
     // Update memory cache
     if let Ok(mut cache) = state.apps.lock() {
@@ -70,6 +73,7 @@ pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Res
     
     Ok(apps)
 }
+
 
 /// Score an app name against a query string. Returns 0 for no match.
 /// Scoring: perfect=100, prefix=80, contains=60, pinyin_initials_prefix=50,

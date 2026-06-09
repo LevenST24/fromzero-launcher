@@ -98,9 +98,14 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
 
     match &output {
         Ok(out) => {
-            if !out.status.success() {
-                eprintln!("[FromZero] PowerShell process exited with error: {:?}", out.status);
-                eprintln!("[FromZero] Stderr: {}", String::from_utf8_lossy(&out.stderr));
+            eprintln!(
+                "[FromZero] PowerShell finished. Status: success={}. Stdout len: {}. Stderr len: {}.",
+                out.status.success(),
+                out.stdout.len(),
+                out.stderr.len()
+            );
+            if !out.status.success() || !out.stderr.is_empty() {
+                eprintln!("[FromZero] Stderr content: {}", String::from_utf8_lossy(&out.stderr));
             }
         }
         Err(e) => {
@@ -111,6 +116,11 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     if let Ok(out) = output {
         let json_str = String::from_utf8_lossy(&out.stdout);
         let trimmed = json_str.trim();
+        
+        eprintln!("[FromZero] PowerShell output trimmed length: {}", trimmed.len());
+        if trimmed.is_empty() || trimmed == "[]" {
+            eprintln!("[FromZero] PowerShell output is empty or '[]'");
+        }
         
         if !trimmed.is_empty() && trimmed != "[]" {
             // PowerShell might output a single object or an array. We handle both by attempting to parse as array first
@@ -132,6 +142,8 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 }
             };
 
+            eprintln!("[FromZero] Parsed {} raw items from start menu JSON", raw_items.len());
+
             let cache_dir = match app_handle.path().app_cache_dir() {
                 Ok(dir) => dir,
                 Err(e) => {
@@ -139,6 +151,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                     return apps;
                 }
             };
+            eprintln!("[FromZero] Cache directory: {}", cache_dir.display());
             let _ = fs::create_dir_all(&cache_dir);
 
             for item in raw_items {
@@ -184,6 +197,7 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
         }
     }
 
+    eprintln!("[FromZero] scan_start_menu returning {} apps", apps.len());
     apps
 }
 
