@@ -123,6 +123,27 @@ pub fn run() {
             // 1. Load settings
             let settings = settings::load_settings(app.handle());
 
+            // 1.5. Clear old low-res icon cache to force extraction of high-res icons
+            let cache_dir = app.path().app_cache_dir().unwrap_or_default();
+            if !cache_dir.as_os_str().is_empty() {
+                let version_file = cache_dir.join("icon_version.txt");
+                let mut needs_clear = true;
+                if version_file.exists() {
+                    if let Ok(v) = std::fs::read_to_string(&version_file) {
+                        if v.trim() == "256" {
+                            needs_clear = false;
+                        }
+                    }
+                }
+                if needs_clear {
+                    let icons_dir = cache_dir.join("icons");
+                    let _ = std::fs::remove_dir_all(&icons_dir);
+                    let _ = std::fs::create_dir_all(&cache_dir);
+                    let _ = std::fs::write(&version_file, "256");
+                    eprintln!("[FromZero] Cleared old low-res icons cache.");
+                }
+            }
+
             // 2. Refresh registry autostart registration if enabled to cure path drifts
             if settings.autostart {
                 let _ = settings::apply_autostart_setting(app.handle(), true);

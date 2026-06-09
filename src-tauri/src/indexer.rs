@@ -272,7 +272,16 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
                     "-ExecutionPolicy", "Bypass",
                     "-WindowStyle", "Hidden",
                     "-Command",
-                    "Add-Type -AssemblyName System.Drawing; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $items = Get-Content $env:TEMP_JSON_PATH -Raw -Encoding UTF8 | ConvertFrom-Json; foreach ($item in $items) { try { if ([System.IO.File]::Exists($item.target)) { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($item.target); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); Write-Output $item.path; } } catch { Write-Warning \"Icon extraction failed for $($item.target): $($_.Exception.Message)\" } }"
+                    r#"Add-Type -AssemblyName System.Drawing; Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class IconExtractor {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PrivateExtractIcons(string lpszFile, int nIconIndex, int cxIcon, int cyIcon, IntPtr[] phicon, uint[] piconid, uint nIcons, uint flags);
+    [DllImport("user32.dll")]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+}
+"@; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $items = Get-Content $env:TEMP_JSON_PATH -Raw -Encoding UTF8 | ConvertFrom-Json; foreach ($item in $items) { try { if ([System.IO.File]::Exists($item.target)) { $phicon = New-Object IntPtr[] 1; $piconid = New-Object uint32[] 1; $extracted = [IconExtractor]::PrivateExtractIcons($item.target, 0, 256, 256, $phicon, $piconid, 1, 0); if ($extracted -gt 0 -and $phicon[0] -ne [IntPtr]::Zero) { $icon = [System.Drawing.Icon]::FromHandle($phicon[0]); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); [void][IconExtractor]::DestroyIcon($phicon[0]); Write-Output $item.path; } else { $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($item.target); $bmp = $icon.ToBitmap(); $bmp.Save($item.icon_path, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); $icon.Dispose(); Write-Output $item.path; } } } catch { Write-Warning "Icon extraction failed for $($item.target): $($_.Exception.Message)" } }"#
                 ]);
                 cmd.env("TEMP_JSON_PATH", &temp_json_path);
 
