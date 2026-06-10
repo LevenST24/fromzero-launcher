@@ -11,16 +11,20 @@ pub struct GlassSettings {
     pub glass_blur: i32,
     #[serde(default = "default_border_opacity")]
     pub border_opacity: f64,
+    #[serde(default = "default_glass_fps")]
+    pub glass_fps: i32,
 }
 
 fn default_glass_blur() -> i32 { 8 }
 fn default_border_opacity() -> f64 { 0.60 }
+fn default_glass_fps() -> i32 { 60 }
 
 impl Default for GlassSettings {
     fn default() -> Self {
         Self {
             glass_blur: default_glass_blur(),
             border_opacity: default_border_opacity(),
+            glass_fps: default_glass_fps(),
         }
     }
 }

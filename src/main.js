@@ -48,7 +48,8 @@ let settings = {};
 // Liquid Glass customizable parameters
 let glassSettings = {
   glassBlur: 8,
-  borderOpacity: 0.60
+  borderOpacity: 0.60,
+  glassFps: 60
 };
 let backupGlassSettings = null;
 
@@ -74,6 +75,7 @@ let currentShortcut = "Ctrl+Space";
 let lastMouseX = 0;
 let lastMouseY = 0;
 let pumping = false;
+let activeGlassFps = 60;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -206,6 +208,8 @@ function applyVisualSettings(config) {
   const container = document.getElementById("launcher-container");
   if (!container) return;
 
+  activeGlassFps = config.glassFps || 60;
+
   // Border opacities (static angle, no cursor tracking)
   const b1 = (config.borderOpacity * 0.3).toFixed(3);
   const b2 = (config.borderOpacity * 0.2).toFixed(3);
@@ -243,7 +247,8 @@ function applyVisualSettings(config) {
 function initSliderListeners() {
   const sliders = [
     { id: "slider-glass-blur", valId: "val-glass-blur", key: "glassBlur", isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true }
+    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true },
+    { id: "slider-glass-fps", valId: "val-glass-fps", key: "glassFps", isFloat: false }
   ];
 
   sliders.forEach(s => {
@@ -268,7 +273,8 @@ function initSliderListeners() {
 function readSlidersState() {
   return {
     glassBlur: parseInt(document.getElementById("slider-glass-blur").value),
-    borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value)
+    borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value),
+    glassFps: parseInt(document.getElementById("slider-glass-fps").value)
   };
 }
 
@@ -276,7 +282,8 @@ function readSlidersState() {
 function syncSlidersToConfig(config) {
   const mappings = [
     { id: "slider-glass-blur", valId: "val-glass-blur", val: config.glassBlur, isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true }
+    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true },
+    { id: "slider-glass-fps", valId: "val-glass-fps", val: config.glassFps, isFloat: false }
   ];
 
   mappings.forEach(m => {
@@ -372,9 +379,10 @@ async function pumpFrames() {
     }
   } catch (_) {}
 
+  const targetInterval = Math.round(1000 / activeGlassFps);
   const elapsed = Date.now() - startTime;
-  // Dynamic delay targeting 60 FPS (16.6ms) for ultra-low latency frame syncing
-  const delay = Math.max(0, 16 - elapsed);
+  // Dynamic delay targeting custom FPS limit for ultra-low latency frame syncing
+  const delay = Math.max(0, targetInterval - elapsed);
   setTimeout(() => {
     if (pumping) {
       requestAnimationFrame(pumpFrames);
@@ -404,6 +412,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (settings.glass_settings) {
       glassSettings.glassBlur = settings.glass_settings.glass_blur ?? glassSettings.glassBlur;
       glassSettings.borderOpacity = settings.glass_settings.border_opacity ?? glassSettings.borderOpacity;
+      glassSettings.glassFps = settings.glass_settings.glass_fps ?? glassSettings.glassFps;
     }
     applyVisualSettings(glassSettings);
     // Set initial DWM Acrylic state based on glassBlur slider
@@ -1029,7 +1038,8 @@ async function saveSettingsConfig() {
   // Glass settings are saved as part of the unified settings object
   settings.glass_settings = {
     glass_blur: glassSettings.glassBlur,
-    border_opacity: glassSettings.borderOpacity
+    border_opacity: glassSettings.borderOpacity,
+    glass_fps: glassSettings.glassFps
   };
 
   // Clean backup so closeSettings does not revert them
