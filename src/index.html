@@ -10,6 +10,20 @@
 
   <body>
     <div class="launcher-container" id="launcher-container">
+      <canvas id="bg-canvas"></canvas>
+
+      <svg style="position:absolute;width:0;height:0">
+        <defs>
+          <filter id="liquidGlass" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                  color-interpolation-filters="sRGB" x="0" y="0" width="720" height="530">
+            <feImage id="disp-map" x="0" y="0" width="720" height="530"
+                     preserveAspectRatio="none" result="map"/>
+            <feDisplacementMap in="SourceGraphic" in2="map" scale="48"
+                               xChannelSelector="R" yChannelSelector="G"/>
+          </filter>
+        </defs>
+      </svg>
+
       <!-- Background ambient orbs -->
       <div class="liquid-bg">
         <div class="orb orb-1"></div>

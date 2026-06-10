@@ -77,9 +77,11 @@ body {
    LAUNCHER CONTAINER — Main glass panel
    ============================================= */
 .launcher-container {
-  position: relative;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 48px;
+  left: 50px;
+  width: 620px;
+  height: 434px;
   border-radius: 8px;
   overflow: hidden;
   background: transparent;
@@ -94,6 +96,17 @@ body {
   --border-angle: 135deg;
   --border1-opacity: 0.18;
   --border2-opacity: 0.12;
+}
+
+#bg-canvas {
+  position: absolute;
+  top: -48px;
+  left: -50px;
+  width: 720px;
+  height: 530px;
+  z-index: -1;
+  pointer-events: none;
+  filter: url(#liquidGlass) blur(2px) saturate(150%) brightness(0.92);
 }
 
 /* Glass tint layer — color tone + saturation over DWM Acrylic blur.

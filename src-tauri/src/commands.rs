@@ -799,6 +799,19 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
     }).await.map_err(|e| format!("Open thread failed: {}", e))?
 }
 
+#[tauri::command]
+pub fn start_bg_capture(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("main").ok_or("Main window not found")?;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    crate::capture::start(pos.x, pos.y, size.width, size.height)
+}
+
+#[tauri::command]
+pub fn stop_bg_capture() {
+    crate::capture::stop();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

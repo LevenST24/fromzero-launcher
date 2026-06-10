@@ -73,6 +73,7 @@ let currentShortcut = "Ctrl+Space";
 // Mouse tracking to ignore hover selection during scroll
 let lastMouseX = 0;
 let lastMouseY = 0;
+let pumping = false;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -108,16 +109,30 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.2.1";
+const APP_VERSION = "v0.2.2-preview";
 
 // =============================================
 // Window Focus/Blur Management (JS-side with debounce)
 // =============================================
 
-window.addEventListener("focus", () => {
+window.addEventListener("focus", async () => {
   lastShowTime = Date.now();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.remove("blurred");
+
+  // Start background capture and frame pumping
+  try {
+    await invoke("start_bg_capture");
+    pumping = true;
+    pumpFrames();
+    // Disable DWM Acrylic when live capture is active to avoid double-blur overlay
+    try { await invoke("set_blur", { value: 0 }); } catch (_) {}
+  } catch (e) {
+    console.warn("[FromZero] Live glass capture unavailable, fallback to Acrylic:", e);
+    pumping = false;
+    try { await invoke("set_blur", { value: glassSettings.glassBlur }); } catch (_) {}
+  }
+
   setTimeout(() => {
     if (searchInput) {
       searchInput.focus();
@@ -129,6 +144,13 @@ window.addEventListener("focus", () => {
 window.addEventListener("blur", () => {
   const container = document.getElementById("launcher-container");
   if (container) container.classList.add("blurred");
+
+  // Stop background capture immediately on blur to save GPU/CPU resources
+  pumping = false;
+  try { invoke("stop_bg_capture"); } catch (_) {}
+
+  // Restore DWM Acrylic for a smooth show/fade transition next time
+  try { invoke("set_blur", { value: glassSettings.glassBlur }); } catch (_) {}
 
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
@@ -209,10 +231,12 @@ function applyVisualSettings(config) {
 
   // Toggle DWM Acrylic: glassBlur=0 → transparent, glassBlur>0 → blurred desktop
   // Debounced to avoid flooding the Rust backend during slider drag
-  clearTimeout(setBlurTimeout);
-  setBlurTimeout = setTimeout(() => {
-    try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
-  }, 60);
+  if (!pumping) {
+    clearTimeout(setBlurTimeout);
+    setBlurTimeout = setTimeout(() => {
+      try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
+    }, 60);
+  }
 }
 
 // Helper: Initialize sliders listeners
@@ -268,11 +292,97 @@ function syncSlidersToConfig(config) {
 }
 
 // =============================================
+// Real-time Background Refraction Helpers
+// =============================================
+const WIN_W = 620;
+const WIN_H = 434;
+const PAD_X = 50;
+const PAD_Y = 48;
+const CORNER = 8;
+const BAND = 28;
+
+function buildDisplacementMap() {
+  const w = WIN_W + PAD_X * 2; // 720
+  const h = WIN_H + PAD_Y * 2; // 530
+  const cv = document.createElement("canvas");
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  const d = img.data;
+  const cx = w / 2;
+  const cy = h / 2;
+  const hw = WIN_W / 2 - CORNER;
+  const hh = WIN_H / 2 - CORNER;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const qx = Math.max(Math.abs(x - cx) - hw, 0);
+      const qy = Math.max(Math.abs(y - cy) - hh, 0);
+      const q_len = Math.hypot(qx, qy);
+      let nx = 0;
+      let ny = 0;
+      if (q_len > 0) {
+        const dist = q_len - CORNER; // SDF to round-rect boundary (<0 is inside)
+        if (dist > -BAND && dist < 0) {
+          const gx = (qx / q_len) * Math.sign(x - cx);
+          const gy = (qy / q_len) * Math.sign(y - cy);
+          const t = 1 + dist / BAND; // 0 (inner boundary) -> 1 (outer boundary)
+          const k = t * t;           // Quadratic transition
+          nx = gx * k;
+          ny = gy * k;
+        }
+      }
+      const i = (y * w + x) * 4;
+      d[i]     = Math.round(128 + nx * 127); // R channel: X displacement
+      d[i + 1] = Math.round(128 + ny * 127); // G channel: Y displacement
+      d[i + 2] = 128;
+      d[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const dispMap = document.getElementById("disp-map");
+  if (dispMap) {
+    dispMap.setAttribute("href", cv.toDataURL());
+  }
+}
+
+async function pumpFrames() {
+  if (!pumping) return;
+  const bgCanvas = document.getElementById("bg-canvas");
+  if (!bgCanvas) return;
+  const bgCtx = bgCanvas.getContext("2d");
+  if (!bgCtx) return;
+
+  try {
+    const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
+    if (res.status === 200) {
+      const w = +res.headers.get("X-Frame-Width");
+      const h = +res.headers.get("X-Frame-Height");
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength === w * h * 4) {
+        if (bgCanvas.width !== w || bgCanvas.height !== h) {
+          bgCanvas.width = w;
+          bgCanvas.height = h;
+        }
+        bgCtx.putImageData(new ImageData(new Uint8ClampedArray(buf), w, h), 0, 0);
+      }
+    }
+  } catch (_) {}
+  setTimeout(() => {
+    if (pumping) {
+      requestAnimationFrame(pumpFrames);
+    }
+  }, 33);
+}
+
+// =============================================
 // Initialize application
 // =============================================
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     console.log("[FromZero] Initializing...");
+    buildDisplacementMap();
     lastShowTime = Date.now();
 
     try {

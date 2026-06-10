@@ -2,6 +2,7 @@ mod commands;
 mod indexer;
 mod settings;
 mod dwm;
+mod capture;
 
 use crate::commands::AppState;
 use std::sync::Mutex;
@@ -92,6 +93,25 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
+        .register_uri_scheme_protocol("bgframe", |_app, _request| {
+            let guard = crate::capture::LATEST_FRAME.lock().unwrap();
+            match &*guard {
+                Some(f) => tauri::http::Response::builder()
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Cache-Control", "no-store")
+                    .header("X-Frame-Width", f.w.to_string())
+                    .header("X-Frame-Height", f.h.to_string())
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Expose-Headers", "X-Frame-Width, X-Frame-Height")
+                    .body(f.data.clone())
+                    .unwrap(),
+                None => tauri::http::Response::builder()
+                    .status(204)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(Vec::new())
+                    .unwrap(),
+            }
+        })
         .manage(AppState {
             apps: Mutex::new(Vec::new()),
             settings_lock: Mutex::new(()),
@@ -113,6 +133,8 @@ pub fn run() {
             commands::search_files,
             commands::get_file_preview,
             commands::open_file,
+            commands::start_bg_capture,
+            commands::stop_bg_capture,
         ])
         .setup(|app| {
             let Some(window) = app.get_webview_window("main") else {
@@ -191,7 +213,10 @@ pub fn run() {
             // DwmExtendFrameIntoClientArea is NOT used (causes caption buttons on borderless windows).
 
             #[cfg(target_os = "windows")]
-            remove_dwm_border(&window);
+            {
+                remove_dwm_border(&window);
+                exclude_from_capture(&window);
+            }
 
             eprintln!("[FromZero] ✓ Setup complete");
             Ok(())
@@ -217,6 +242,20 @@ fn remove_dwm_border(window: &WebviewWindow) {
         match dwm::set_dwm_attribute(raw_hwnd, DWMWA_BORDER_COLOR, DWM_COLOR_NONE) {
             Ok(()) => eprintln!("[FromZero] ✓ Native DWM border color removed"),
             Err(e) => eprintln!("[FromZero] DWM border color removal failed: {e}"),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn exclude_from_capture(window: &WebviewWindow) {
+    use std::ffi::c_void;
+    extern "system" {
+        fn SetWindowDisplayAffinity(hwnd: *mut c_void, affinity: u32) -> i32;
+    }
+    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x11;
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            SetWindowDisplayAffinity(hwnd.0 as *mut c_void, WDA_EXCLUDEFROMCAPTURE);
         }
     }
 }
