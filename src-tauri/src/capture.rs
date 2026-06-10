@@ -55,24 +55,10 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         let src_w = x1 - x0;
         let src_h = y1 - y0;
         
-        // Downscale by 3x to reduce data size by 9x, optimizing IPC and rendering performance
-        let dst_w = src_w / 3;
-        let dst_h = src_h / 3;
-        let mut dst_data = Vec::with_capacity((dst_w * dst_h * 4) as usize);
-        for dy in 0..dst_h {
-            let sy = dy * 3;
-            let row_start = (sy * src_w * 4) as usize;
-            for dx in 0..dst_w {
-                let sx = dx * 3;
-                let idx = row_start + (sx * 4) as usize;
-                if idx + 3 < bytes.len() {
-                    dst_data.push(bytes[idx]);
-                    dst_data.push(bytes[idx + 1]);
-                    dst_data.push(bytes[idx + 2]);
-                    dst_data.push(bytes[idx + 3]);
-                }
-            }
-        }
+        // Full physical resolution capture for high clarity
+        let dst_w = src_w;
+        let dst_h = src_h;
+        let dst_data = bytes.to_vec();
 
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
