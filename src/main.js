@@ -74,8 +74,21 @@ let currentShortcut = "Ctrl+Space";
 // Mouse tracking to ignore hover selection during scroll
 let lastMouseX = 0;
 let lastMouseY = 0;
-let pumping = false;
 let activeGlassFps = 60;
+let displacementCanvas = null;
+let peekTimer = null;
+
+// WebGL state
+let gl = null;
+let glProgram = null;
+let textureImage = null;
+let textureDisp = null;
+let imageLocation = null;
+let dispLocation = null;
+let scaleXLocation = null;
+let scaleYLocation = null;
+let webglInitialized = false;
+let lastRenderedSeq = 0;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -117,7 +130,7 @@ const APP_VERSION = "v0.2.2-preview";
 // Window Focus/Blur Management (JS-side with debounce)
 // =============================================
 
-window.addEventListener("focus", async () => {
+async function handleWindowFocus() {
   lastShowTime = Date.now();
   const container = document.getElementById("launcher-container");
   if (container) container.classList.remove("blurred");
@@ -141,7 +154,9 @@ window.addEventListener("focus", async () => {
       searchInput.select();
     }
   }, 50);
-});
+}
+
+window.addEventListener("focus", handleWindowFocus);
 
 window.addEventListener("blur", () => {
   const container = document.getElementById("launcher-container");
@@ -210,11 +225,14 @@ function applyVisualSettings(config) {
 
   activeGlassFps = config.glassFps || 60;
 
-  // Border opacities (static angle, no cursor tracking)
-  const b1 = (config.borderOpacity * 0.3).toFixed(3);
-  const b2 = (config.borderOpacity * 0.2).toFixed(3);
+  // Border opacities (static angle, no cursor tracking, mapping coefficients raised for better visibility)
+  const b1 = (config.borderOpacity * 0.7).toFixed(3);
+  const b2 = (config.borderOpacity * 0.5).toFixed(3);
   container.style.setProperty("--border1-opacity", b1);
   container.style.setProperty("--border2-opacity", b2);
+
+  // Set canvas blur CSS custom property
+  container.style.setProperty("--canvas-blur", `${Math.max(0, config.glassBlur / 4)}px`);
 
   // === Glass tint layer: opacity controlled by glassBlur slider ===
   // Higher glassBlur = more opaque tint = more frosted look (covers DWM Acrylic blur more).
@@ -264,6 +282,15 @@ function initSliderListeners() {
         // Apply sliders state immediately for live feedback
         const currentConfig = readSlidersState();
         applyVisualSettings(currentConfig);
+
+        // Make modal overlay temporarily semi-transparent for visual previewing
+        if (settingsOverlay) {
+          settingsOverlay.classList.add("peek");
+          clearTimeout(peekTimer);
+          peekTimer = setTimeout(() => {
+            settingsOverlay.classList.remove("peek");
+          }, 1200);
+        }
       });
     }
   });
@@ -348,9 +375,122 @@ function buildDisplacementMap() {
     }
   }
   ctx.putImageData(img, 0, 0);
+  displacementCanvas = cv;
+  if (webglInitialized) {
+    gl.bindTexture(gl.TEXTURE_2D, textureDisp);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  }
   const dispMap = document.getElementById("disp-map");
   if (dispMap) {
     dispMap.setAttribute("href", cv.toDataURL());
+  }
+}
+
+function compileShader(gl, source, type) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error("[FromZero] Shader compile error:", gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+function initWebGL(canvas) {
+  try {
+    gl = canvas.getContext("webgl", { alpha: false, depth: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) {
+      console.warn("[FromZero] WebGL context not supported");
+      return false;
+    }
+
+    const vsSource = `
+      attribute vec2 a_position;
+      varying vec2 v_texCoord;
+      void main() {
+        v_texCoord = a_position * 0.5 + 0.5;
+        v_texCoord.y = 1.0 - v_texCoord.y;
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
+
+    const fsSource = `
+      precision mediump float;
+      varying vec2 v_texCoord;
+      uniform sampler2D u_image;
+      uniform sampler2D u_displacementMap;
+      uniform float u_scaleX;
+      uniform float u_scaleY;
+      void main() {
+        vec4 disp = texture2D(u_displacementMap, v_texCoord);
+        vec2 offset = vec2(disp.r - 0.5, disp.g - 0.5) * 2.0;
+        vec2 uv = v_texCoord + vec2(offset.x * u_scaleX, offset.y * u_scaleY);
+        gl_FragColor = texture2D(u_image, clamp(uv, 0.0, 1.0));
+      }
+    `;
+
+    const vs = compileShader(gl, vsSource, gl.VERTEX_SHADER);
+    const fs = compileShader(gl, fsSource, gl.FRAGMENT_SHADER);
+    if (!vs || !fs) return false;
+
+    glProgram = gl.createProgram();
+    gl.attachShader(glProgram, vs);
+    gl.attachShader(glProgram, fs);
+    gl.linkProgram(glProgram);
+
+    if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+      console.error("[FromZero] WebGL program link error:", gl.getProgramInfoLog(glProgram));
+      return false;
+    }
+
+    gl.useProgram(glProgram);
+
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,
+       1, -1,
+      -1,  1,
+      -1,  1,
+       1, -1,
+       1,  1,
+    ]), gl.STATIC_DRAW);
+
+    const posAttr = gl.getAttribLocation(glProgram, "a_position");
+    gl.enableVertexAttribArray(posAttr);
+    gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
+
+    imageLocation = gl.getUniformLocation(glProgram, "u_image");
+    dispLocation = gl.getUniformLocation(glProgram, "u_displacementMap");
+    scaleXLocation = gl.getUniformLocation(glProgram, "u_scaleX");
+    scaleYLocation = gl.getUniformLocation(glProgram, "u_scaleY");
+
+    textureImage = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, textureImage);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    textureDisp = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, textureDisp);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    // Apply WebGL canvas filter style to bypass the slow SVG displacement path
+    canvas.style.filter = "blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92)";
+
+    webglInitialized = true;
+    console.log("[FromZero] WebGL context successfully initialized");
+    return true;
+  } catch (e) {
+    console.error("[FromZero] Failed to init WebGL context, falling back to 2D canvas:", e);
+    webglInitialized = false;
+    return false;
   }
 }
 
@@ -358,30 +498,94 @@ async function pumpFrames() {
   if (!pumping) return;
   const bgCanvas = document.getElementById("bg-canvas");
   if (!bgCanvas) return;
-  const bgCtx = bgCanvas.getContext("2d");
-  if (!bgCtx) return;
 
+  // Lazily initialize WebGL
+  if (!webglInitialized && !initWebGL(bgCanvas)) {
+    // Graceful fallback to 2D Canvas + CPU SVG displacement filter
+    const bgCtx = bgCanvas.getContext("2d");
+    if (!bgCtx) return;
+
+    bgCanvas.style.filter = "url(#liquidGlass) blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92)";
+
+    const startTime = Date.now();
+    try {
+      const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
+      if (res.status === 200) {
+        const w = +res.headers.get("X-Frame-Width");
+        const h = +res.headers.get("X-Frame-Height");
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength === w * h * 4) {
+          if (bgCanvas.width !== w || bgCanvas.height !== h) {
+            bgCanvas.width = w;
+            bgCanvas.height = h;
+          }
+          bgCtx.putImageData(new ImageData(new Uint8ClampedArray(buf), w, h), 0, 0);
+        }
+      }
+    } catch (_) {}
+
+    const targetInterval = Math.round(1000 / activeGlassFps);
+    const elapsed = Date.now() - startTime;
+    const delay = Math.max(0, targetInterval - elapsed);
+    setTimeout(() => {
+      if (pumping) requestAnimationFrame(pumpFrames);
+    }, delay);
+    return;
+  }
+
+  // GPU path using WebGL
   const startTime = Date.now();
-
   try {
     const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
     if (res.status === 200) {
-      const w = +res.headers.get("X-Frame-Width");
-      const h = +res.headers.get("X-Frame-Height");
-      const buf = await res.arrayBuffer();
-      if (buf.byteLength === w * h * 4) {
-        if (bgCanvas.width !== w || bgCanvas.height !== h) {
-          bgCanvas.width = w;
-          bgCanvas.height = h;
+      const seq = +res.headers.get("X-Frame-Seq");
+      if (seq !== lastRenderedSeq) {
+        lastRenderedSeq = seq;
+        const w = +res.headers.get("X-Frame-Width");
+        const h = +res.headers.get("X-Frame-Height");
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength === w * h * 4) {
+          if (bgCanvas.width !== w || bgCanvas.height !== h) {
+            bgCanvas.width = w;
+            bgCanvas.height = h;
+            gl.viewport(0, 0, w, h);
+            
+            // Upload displacement map texture (if first time or size changed)
+            if (displacementCanvas) {
+              gl.bindTexture(gl.TEXTURE_2D, textureDisp);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, displacementCanvas);
+            }
+          }
+
+          // Upload background frame bytes to u_image texture
+          gl.bindTexture(gl.TEXTURE_2D, textureImage);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(buf));
+
+          // Render using displacement map shader
+          gl.useProgram(glProgram);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, textureImage);
+          gl.uniform1i(imageLocation, 0);
+
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, textureDisp);
+          gl.uniform1i(dispLocation, 1);
+
+          // SVG scale=48 relative displacement warp
+          const scale = 48.0;
+          gl.uniform1f(scaleXLocation, scale / w);
+          gl.uniform1f(scaleYLocation, scale / h);
+
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
-        bgCtx.putImageData(new ImageData(new Uint8ClampedArray(buf), w, h), 0, 0);
       }
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error("[FromZero] WebGL render error:", err);
+  }
 
   const targetInterval = Math.round(1000 / activeGlassFps);
   const elapsed = Date.now() - startTime;
-  // Dynamic delay targeting custom FPS limit for ultra-low latency frame syncing
   const delay = Math.max(0, targetInterval - elapsed);
   setTimeout(() => {
     if (pumping) {
@@ -510,6 +714,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     console.log("[FromZero] ✓ Frontend initialization complete");
+    if (document.hasFocus()) {
+      await handleWindowFocus();
+    }
   } catch (error) {
     console.error("[FromZero] Initialization error:", error);
     if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 初始化失败，请重试`;

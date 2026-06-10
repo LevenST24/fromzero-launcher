@@ -94,17 +94,24 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .register_uri_scheme_protocol("bgframe", |_app, _request| {
-            let guard = crate::capture::LATEST_FRAME.lock().unwrap();
-            match &*guard {
-                Some(f) => tauri::http::Response::builder()
-                    .header("Content-Type", "application/octet-stream")
-                    .header("Cache-Control", "no-store")
-                    .header("X-Frame-Width", f.w.to_string())
-                    .header("X-Frame-Height", f.h.to_string())
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Expose-Headers", "X-Frame-Width, X-Frame-Height")
-                    .body(f.data.clone())
-                    .unwrap(),
+            let frame_opt = {
+                let guard = crate::capture::LATEST_FRAME.lock().unwrap();
+                guard.clone()
+            };
+            match frame_opt {
+                Some(f) => {
+                    let data = (*f.data).clone();
+                    tauri::http::Response::builder()
+                        .header("Content-Type", "application/octet-stream")
+                        .header("Cache-Control", "no-store")
+                        .header("X-Frame-Width", f.w.to_string())
+                        .header("X-Frame-Height", f.h.to_string())
+                        .header("X-Frame-Seq", f.seq.to_string())
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Access-Control-Expose-Headers", "X-Frame-Width, X-Frame-Height, X-Frame-Seq")
+                        .body(data)
+                        .unwrap()
+                }
                 None => tauri::http::Response::builder()
                     .status(204)
                     .header("Access-Control-Allow-Origin", "*")

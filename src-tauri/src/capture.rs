@@ -1,4 +1,5 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     frame::Frame,
@@ -10,16 +11,20 @@ use windows_capture::{
     },
 };
 
+#[derive(Clone)]
 pub struct FrameData {
     pub w: u32,
     pub h: u32,
-    pub data: Vec<u8>, // RGBA, no padding
+    pub seq: u64,
+    pub data: Arc<Vec<u8>>, // RGBA, no padding
 }
 
 // Latest captured frame (frontend pulls via custom protocol)
 pub static LATEST_FRAME: Mutex<Option<FrameData>> = Mutex::new(None);
 // Crop region: x0, y0, x1, y1 (in physical pixels relative to primary monitor)
 pub static CROP: Mutex<(u32, u32, u32, u32)> = Mutex::new((0, 0, 1, 1));
+// Global frame sequence counter
+static SEQ: AtomicU64 = AtomicU64::new(0);
 // Capture session control handle
 static CONTROL: OnceLock<Mutex<Option<windows_capture::capture::CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>>> = OnceLock::new();
 
@@ -50,15 +55,15 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         let src_w = x1 - x0;
         let src_h = y1 - y0;
         
-        // Downscale by 2x to reduce size by 4x, optimizing IPC and rendering performance
-        let dst_w = src_w / 2;
-        let dst_h = src_h / 2;
+        // Downscale by 3x to reduce data size by 9x, optimizing IPC and rendering performance
+        let dst_w = src_w / 3;
+        let dst_h = src_h / 3;
         let mut dst_data = Vec::with_capacity((dst_w * dst_h * 4) as usize);
         for dy in 0..dst_h {
-            let sy = dy * 2;
+            let sy = dy * 3;
             let row_start = (sy * src_w * 4) as usize;
             for dx in 0..dst_w {
-                let sx = dx * 2;
+                let sx = dx * 3;
                 let idx = row_start + (sx * 4) as usize;
                 if idx + 3 < bytes.len() {
                     dst_data.push(bytes[idx]);
@@ -69,10 +74,13 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             }
         }
 
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+
         *LATEST_FRAME.lock().unwrap() = Some(FrameData {
             w: dst_w,
             h: dst_h,
-            data: dst_data,
+            seq,
+            data: Arc::new(dst_data),
         });
         Ok(())
     }
@@ -121,7 +129,11 @@ pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> R
 
 /// Terminate the capture session.
 pub fn stop() {
-    if let Some(c) = control_slot().lock().unwrap().take() {
+    let control = {
+        let mut slot = control_slot().lock().unwrap();
+        slot.take()
+    };
+    if let Some(c) = control {
         let _ = c.stop();
     }
     *LATEST_FRAME.lock().unwrap() = None;

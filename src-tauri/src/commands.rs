@@ -800,18 +800,22 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn start_bg_capture(app: AppHandle) -> Result<(), String> {
+pub async fn start_bg_capture(app: AppHandle) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("Main window not found")?;
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let pad_phys = (40.0 * scale).round() as u32; // 40 CSS px padding
-    crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
+    tokio::task::spawn_blocking(move || {
+        crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn stop_bg_capture() {
-    crate::capture::stop();
+pub async fn stop_bg_capture() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| {
+        crate::capture::stop();
+    }).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
