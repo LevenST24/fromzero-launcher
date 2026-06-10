@@ -78,22 +78,36 @@ impl Default for Settings {
 pub fn get_settings_path(app_handle: &AppHandle) -> Option<PathBuf> {
     let mut config_dir = app_handle.path().app_config_dir().ok()?;
     // Ensure parent directory exists
-    let _ = fs::create_dir_all(&config_dir);
+    if let Err(e) = fs::create_dir_all(&config_dir) {
+        eprintln!("[FromZero] \u{2717} Failed to create config directory {}: {}", config_dir.display(), e);
+        return None;
+    }
     config_dir.push("settings.json");
     Some(config_dir)
 }
 
 pub fn load_settings(app_handle: &AppHandle) -> Settings {
-    if let Some(path) = get_settings_path(app_handle) {
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(settings) = serde_json::from_str::<Settings>(&content) {
-                    return settings;
-                }
+    let Some(path) = get_settings_path(app_handle) else {
+        eprintln!("[FromZero] \u{2717} Could not resolve settings path, using defaults");
+        return Settings::default();
+    };
+    if !path.exists() {
+        return Settings::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<Settings>(&content) {
+            Ok(settings) => settings,
+            Err(e) => {
+                eprintln!("[FromZero] \u{2717} Failed to parse settings file {}: {}", path.display(), e);
+                eprintln!("[FromZero]   Using default settings (corrupt file will be overwritten on next save)");
+                Settings::default()
             }
+        },
+        Err(e) => {
+            eprintln!("[FromZero] \u{2717} Failed to read settings file {}: {}", path.display(), e);
+            Settings::default()
         }
     }
-    Settings::default()
 }
 
 #[cfg(target_os = "windows")]

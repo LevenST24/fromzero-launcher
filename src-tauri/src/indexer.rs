@@ -152,7 +152,10 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 }
             };
             eprintln!("[FromZero] Cache directory: {}", cache_dir.display());
-            let _ = fs::create_dir_all(&cache_dir);
+            if let Err(e) = fs::create_dir_all(&cache_dir) {
+                eprintln!("[FromZero] ✗ Failed to create cache directory {}: {}", cache_dir.display(), e);
+                return apps;
+            }
 
             for item in raw_items {
                 let name_lower = item.name.to_lowercase();
@@ -179,7 +182,9 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 let icon_name = format!("{:x}.png", get_path_hash(&item.path));
                 let mut icon_path = cache_dir.clone();
                 icon_path.push("icons");
-                let _ = fs::create_dir_all(&icon_path);
+                if let Err(e) = fs::create_dir_all(&icon_path) {
+                    eprintln!("[FromZero] ✗ Failed to create icons directory {}: {}", icon_path.display(), e);
+                }
                 icon_path.push(icon_name);
                 let icon_path_str = icon_path.to_string_lossy().into_owned();
 
@@ -261,8 +266,12 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
         let sanitized_thread_id: String = thread_id.chars().filter(|c| c.is_alphanumeric()).collect();
         let temp_json_path = cache_dir.join(format!("icon_targets_{}_{}.json", now, sanitized_thread_id));
         
-        if let Ok(json_content) = serde_json::to_string(&items_to_extract) {
-            if fs::write(&temp_json_path, json_content).is_ok() {
+        match serde_json::to_string(&items_to_extract) {
+            Ok(json_content) => {
+                if let Err(e) = fs::write(&temp_json_path, &json_content) {
+                    eprintln!("[FromZero] ✗ Failed to write icon extraction JSON to {}: {}", temp_json_path.display(), e);
+                    return;
+                }
                 #[cfg(target_os = "windows")]
                 use std::os::windows::process::CommandExt;
 
@@ -288,20 +297,37 @@ public class IconExtractor {
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-                if let Ok(output) = run_command_with_timeout(cmd, std::time::Duration::from_secs(15)) {
-                    let out_str = String::from_utf8_lossy(&output.stdout);
-                    for line in out_str.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            let _ = app_handle.emit("icon-ready", trimmed.to_string());
-                            // Pacing: Sleep 15ms between events to prevent choking the frontend JS thread with a massive sudden flood
-                            std::thread::sleep(std::time::Duration::from_millis(15));
+                match run_command_with_timeout(cmd, std::time::Duration::from_secs(15)) {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            eprintln!("[FromZero] Icon extraction PowerShell exited with non-zero status");
                         }
+                        let out_str = String::from_utf8_lossy(&output.stdout);
+                        for line in out_str.lines() {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty() {
+                                if let Err(e) = app_handle.emit("icon-ready", trimmed.to_string()) {
+                                    eprintln!("[FromZero] ✗ Failed to emit icon-ready event: {}", e);
+                                }
+                                // Pacing: Sleep 15ms between events to prevent choking the frontend JS thread with a massive sudden flood
+                                std::thread::sleep(std::time::Duration::from_millis(15));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[FromZero] ✗ Icon extraction command failed: {}", e);
                     }
                 }
             }
-            // Clean up temporary JSON file
-            let _ = fs::remove_file(&temp_json_path);
+            Err(e) => {
+                eprintln!("[FromZero] ✗ Failed to serialize icon extraction items: {}", e);
+            }
+        }
+        // Clean up temporary JSON file
+        if let Err(e) = fs::remove_file(&temp_json_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[FromZero] ✗ Failed to clean up temp JSON file: {}", e);
+            }
         }
     });
 }

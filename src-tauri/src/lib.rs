@@ -77,8 +77,13 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Store tray icon in managed state to extend its lifetime and prevent garbage collection drop
     let state = handle.state::<AppState>();
-    if let Ok(mut tray_guard) = state.tray.lock() {
-        *tray_guard = Some(tray);
+    match state.tray.lock() {
+        Ok(mut tray_guard) => {
+            *tray_guard = Some(tray);
+        }
+        Err(e) => {
+            eprintln!("[FromZero] ✗ Tray mutex poisoned, cannot store tray icon: {}", e);
+        }
     }
 
     Ok(())
@@ -168,7 +173,9 @@ pub fn run() {
 
             // 2. Refresh registry autostart registration if enabled to cure path drifts
             if settings.autostart {
-                let _ = settings::apply_autostart_setting(app.handle(), true);
+                if let Err(e) = settings::apply_autostart_setting(app.handle(), true) {
+                    eprintln!("[FromZero] ✗ Failed to refresh autostart registration: {}", e);
+                }
             }
 
             // 3. Register global shortcut from settings
@@ -185,7 +192,9 @@ pub fn run() {
                             // Persist fallback shortcut back to settings file so configuration matches actual bound key
                             let mut updated_settings = settings.clone();
                             updated_settings.shortcut = fallback.to_string();
-                            let _ = settings::save_settings(app.handle(), &updated_settings);
+                            if let Err(e) = settings::save_settings(app.handle(), &updated_settings) {
+                                eprintln!("[FromZero] ✗ Failed to persist fallback shortcut to settings: {}", e);
+                            }
                         }
                         Err(e2) => eprintln!("[FromZero] ✗ Fallback also failed: {e2}"),
                     }

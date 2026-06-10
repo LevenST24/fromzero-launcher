@@ -234,7 +234,9 @@ function applyVisualSettings(config) {
   if (!pumping) {
     clearTimeout(setBlurTimeout);
     setBlurTimeout = setTimeout(() => {
-      try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
+      invoke("set_blur", { value: config.glassBlur }).catch(e => {
+        console.warn("[FromZero] set_blur failed:", e);
+      });
     }, 60);
   }
 }
