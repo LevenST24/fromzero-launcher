@@ -5,7 +5,11 @@
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-green.svg?style=flat-square&logo=windows)](https://microsoft.com)
 
-此版本突破了网页端透明窗口的物理限制，通过高频 Direct3D11 实时捕获管线，实现了真正与桌面背景同频呼吸、折射光影的液态玻璃效果。
+这是我们在 Windows 平台“液态玻璃”视觉效果上的终极探索。
+
+在过往的版本中，网页端的透明窗口无法感知操作系统桌面背后的像素，导致我们只能在“一块需要频繁截图的静态玻璃板”或“完全没有边缘折射的透明空气”之间做妥协。
+
+v0.2.2-preview 彻底打破了这一架构壁垒。我们不再使用死板的静态截图，而是直接在 GPU 渲染管线上将整个桌面的实时画面泵入 WebView 内部，实现了真正与桌面背景同频呼吸、折射光影的液态玻璃效果。
 
 ---
 
