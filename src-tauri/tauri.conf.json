@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://bgframe.localhost; frame-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; img-src 'self' asset: https://asset.localhost http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline';",
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' http://bgframe.localhost; frame-src 'self' blob: data:; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; img-src 'self' asset: https://asset.localhost http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline';",
       "assetProtocol": {
         "enable": true,
         "scope": [
