@@ -354,6 +354,8 @@ async function pumpFrames() {
   const bgCtx = bgCanvas.getContext("2d");
   if (!bgCtx) return;
 
+  const startTime = Date.now();
+
   try {
     const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
     if (res.status === 200) {
@@ -369,11 +371,15 @@ async function pumpFrames() {
       }
     }
   } catch (_) {}
+
+  const elapsed = Date.now() - startTime;
+  // Dynamic delay targeting 60 FPS (16.6ms) for ultra-low latency frame syncing
+  const delay = Math.max(0, 16 - elapsed);
   setTimeout(() => {
     if (pumping) {
       requestAnimationFrame(pumpFrames);
     }
-  }, 33);
+  }, delay);
 }
 
 // =============================================

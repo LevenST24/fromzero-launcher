@@ -46,10 +46,33 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Crop the frame buffer to match the window bounds on screen
         let mut cropped = frame.buffer_crop(x0, y0, x1, y1)?;
         let bytes = cropped.as_nopadding_buffer()?;
+        
+        let src_w = x1 - x0;
+        let src_h = y1 - y0;
+        
+        // Downscale by 2x to reduce size by 4x, optimizing IPC and rendering performance
+        let dst_w = src_w / 2;
+        let dst_h = src_h / 2;
+        let mut dst_data = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+        for dy in 0..dst_h {
+            let sy = dy * 2;
+            let row_start = (sy * src_w * 4) as usize;
+            for dx in 0..dst_w {
+                let sx = dx * 2;
+                let idx = row_start + (sx * 4) as usize;
+                if idx + 3 < bytes.len() {
+                    dst_data.push(bytes[idx]);
+                    dst_data.push(bytes[idx + 1]);
+                    dst_data.push(bytes[idx + 2]);
+                    dst_data.push(bytes[idx + 3]);
+                }
+            }
+        }
+
         *LATEST_FRAME.lock().unwrap() = Some(FrameData {
-            w: x1 - x0,
-            h: y1 - y0,
-            data: bytes.to_vec(),
+            w: dst_w,
+            h: dst_h,
+            data: dst_data,
         });
         Ok(())
     }
