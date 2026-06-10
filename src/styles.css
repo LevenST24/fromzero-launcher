@@ -77,11 +77,9 @@ body {
    LAUNCHER CONTAINER — Main glass panel
    ============================================= */
 .launcher-container {
-  position: absolute;
-  top: 48px;
-  left: 50px;
-  width: 620px;
-  height: 434px;
+  position: relative;
+  width: 100%;
+  height: 100%;
   border-radius: 8px;
   overflow: hidden;
   background: transparent;
@@ -100,8 +98,8 @@ body {
 
 #bg-canvas {
   position: absolute;
-  top: -48px;
-  left: -50px;
+  top: -40px;
+  left: -40px;
   width: 720px;
   height: 530px;
   z-index: -1;

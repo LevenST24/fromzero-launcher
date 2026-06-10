@@ -804,7 +804,9 @@ pub fn start_bg_capture(app: AppHandle) -> Result<(), String> {
     let window = app.get_webview_window("main").ok_or("Main window not found")?;
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
-    crate::capture::start(pos.x, pos.y, size.width, size.height)
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pad_phys = (40.0 * scale).round() as u32; // 40 CSS px padding
+    crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
 }
 
 #[tauri::command]

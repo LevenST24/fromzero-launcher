@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "FromZero Launcher",
-        "width": 720,
-        "height": 530,
+        "width": 640,
+        "height": 450,
         "resizable": false,
         "decorations": false,
         "transparent": true,

@@ -294,10 +294,10 @@ function syncSlidersToConfig(config) {
 // =============================================
 // Real-time Background Refraction Helpers
 // =============================================
-const WIN_W = 620;
-const WIN_H = 434;
-const PAD_X = 50;
-const PAD_Y = 48;
+const WIN_W = 640;
+const WIN_H = 450;
+const PAD_X = 40;
+const PAD_Y = 40;
 const CORNER = 8;
 const BAND = 28;
 

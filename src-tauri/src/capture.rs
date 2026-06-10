@@ -61,18 +61,18 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
 /// Start graphics capture on the primary monitor.
 /// Coordinates are physical screen pixels.
-pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32) -> Result<(), String> {
+pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> Result<(), String> {
     stop(); // Guarantee idempotence by stopping any existing session first
 
     let monitor = Monitor::primary().map_err(|e| e.to_string())?;
     let mon_w = monitor.width().map_err(|e| e.to_string())?;
     let mon_h = monitor.height().map_err(|e| e.to_string())?;
 
-    // Clamp target window crop boundaries to monitor size limits
-    let x0 = win_x.max(0) as u32;
-    let y0 = win_y.max(0) as u32;
-    let x1 = ((win_x + win_w as i32) as u32).min(mon_w);
-    let y1 = ((win_y + win_h as i32) as u32).min(mon_h);
+    // Apply the physical padding to expand the capture bounding box outside the window
+    let x0 = (win_x - pad_phys as i32).max(0) as u32;
+    let y0 = (win_y - pad_phys as i32).max(0) as u32;
+    let x1 = ((win_x + win_w as i32 + pad_phys as i32) as u32).min(mon_w);
+    let y1 = ((win_y + win_h as i32 + pad_phys as i32) as u32).min(mon_h);
 
     if x1 <= x0 || y1 <= y0 {
         return Err("Invalid window capture bounds: window is off-screen".to_string());
