@@ -24,7 +24,7 @@ v0.2.2-preview 彻底打破了这一架构壁垒。我们不再使用死板的�
 
 ### 📦 最终章测试单包
 
-* **[fromzero-launcher-lite_0.2.2-preview.exe](fromzero-launcher-lite_0.2.2-preview.exe)** (~10.3 MB)
+* **[fromzero-launcher-lite_0.2.2-preview.exe](https://github.com/LevenST24/fromzero-launcher/releases/download/v0.2.2-preview/fromzero-launcher-lite_0.2.2-preview.exe)** (~10.3 MB)
   > [!NOTE]
   > 免安装绿色单包，解压即用。旧系统（Win10 2004 以下）运行会自动降级回毛玻璃（Acrylic）模式。
   >
