@@ -1,7 +1,7 @@
 use crate::indexer::{self, AppItem};
 use crate::settings::{self, Settings};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Emitter};
 
 pub struct AppState {
     pub apps: Mutex<Vec<AppItem>>,
@@ -31,6 +31,25 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
     if old_settings.shortcut != settings.shortcut {
         register_shortcut_internal(&app_handle, &settings.shortcut)?;
     }
+
+    // Compare and update capture FPS
+    if old_settings.glass_settings.glass_fps != settings.glass_settings.glass_fps {
+        crate::capture::CAPTURE_FPS.store(settings.glass_settings.glass_fps as u32, std::sync::atomic::Ordering::Relaxed);
+        if crate::capture::is_active() {
+            let app_handle_clone = app_handle.clone();
+            tokio::spawn(async move {
+                if let Some(window) = app_handle_clone.get_webview_window("main") {
+                    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        let pad_phys = (40.0 * scale).round() as u32;
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
+                        }).await;
+                    }
+                }
+            });
+        }
+    }
     
     settings::save_settings(&app_handle, &settings)?;
     Ok(())
@@ -56,19 +75,78 @@ pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: 
 #[tauri::command]
 pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<AppItem>, String> {
     eprintln!("[FromZero] scan_apps command invoked");
+    
+    // Check local JSON cache first to eliminate startup lag
+    if let Some(apps) = indexer::load_apps_cache(&app_handle) {
+        eprintln!("[FromZero] scan_apps returning {} apps from local JSON cache", apps.len());
+        
+        // Update memory cache
+        if let Ok(mut cache) = state.apps.lock() {
+            *cache = apps.clone();
+        }
+        
+        // Extract icons in background for current apps
+        indexer::trigger_icon_extraction(app_handle.clone(), apps.clone());
+        
+        // Spawn asynchronous background scan to refresh the list if anything changed
+        let app_handle_bg = app_handle.clone();
+        let apps_old = apps.clone();
+        tokio::spawn(async move {
+            let app_handle_bg_clone = app_handle_bg.clone();
+            let apps_now = tokio::task::spawn_blocking(move || {
+                indexer::scan_start_menu(&app_handle_bg_clone)
+            }).await;
+            
+            if let Ok(new_apps) = apps_now {
+                let mut changed = false;
+                if new_apps.len() != apps_old.len() {
+                    changed = true;
+                } else {
+                    for (a, b) in new_apps.iter().zip(apps_old.iter()) {
+                        if a.path != b.path || a.name != b.name || a.target != b.target {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if changed {
+                    eprintln!("[FromZero] Start menu changed in background. Updating cache with {} apps", new_apps.len());
+                    let _ = indexer::save_apps_cache(&app_handle_bg, &new_apps);
+                    if let Some(bg_state) = app_handle_bg.try_state::<AppState>() {
+                        if let Ok(mut cache) = bg_state.apps.lock() {
+                            *cache = new_apps.clone();
+                        }
+                    }
+                    // Emit event to notify frontend to refresh
+                    let _ = app_handle_bg.emit("apps-updated", new_apps.clone());
+                    // Extract icons for new apps
+                    indexer::trigger_icon_extraction(app_handle_bg, new_apps);
+                }
+            }
+        });
+        
+        return Ok(apps);
+    }
+    
+    // Fallback: perform synchronous scan on first run
+    eprintln!("[FromZero] No apps cache found, performing synchronous scan on first run");
     let app_handle_clone = app_handle.clone();
     let apps = tokio::task::spawn_blocking(move || {
         indexer::scan_start_menu(&app_handle_clone)
     }).await.map_err(|e| format!("App scan thread failed: {}", e))?;
     
-    eprintln!("[FromZero] scan_apps backend returned {} apps", apps.len());
+    eprintln!("[FromZero] scan_apps synchronous scan returned {} apps", apps.len());
     
-    // Update memory cache
+    // Save to memory cache
     if let Ok(mut cache) = state.apps.lock() {
         *cache = apps.clone();
     }
     
-    // Extract icons asynchronously in background
+    // Save to JSON cache
+    let _ = indexer::save_apps_cache(&app_handle, &apps);
+    
+    // Extract icons asynchronously
     indexer::trigger_icon_extraction(app_handle.clone(), apps.clone());
     
     Ok(apps)
@@ -229,6 +307,39 @@ pub fn execute_sys_command(command: String) -> Result<(), String> {
     Ok(())
 }
 
+fn toggle_window_visibility(window: &tauri::WebviewWindow) {
+    let is_visible = window.is_visible().unwrap_or(false);
+    let is_focused = window.is_focused().unwrap_or(false);
+    if is_visible && is_focused {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+        let _ = window.set_focus();
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(hwnd) = window.hwnd() {
+                use std::ffi::c_void;
+                unsafe {
+                    type SetForegroundWindowFn = unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
+                    if let Ok(user32_name) = std::ffi::CString::new("user32.dll") {
+                        let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
+                        if !user32.is_null() {
+                            if let Ok(func_name) = std::ffi::CString::new("SetForegroundWindow") {
+                                let proc_addr = winapi::um::libloaderapi::GetProcAddress(user32, func_name.as_ptr());
+                                if !proc_addr.is_null() {
+                                    let set_fg: SetForegroundWindowFn = std::mem::transmute(proc_addr);
+                                    set_fg(hwnd.0 as *mut c_void);
+                                }
+                            }
+                            winapi::um::libloaderapi::FreeLibrary(user32);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     use std::str::FromStr;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -243,14 +354,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
     match app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
         if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(visible) = window.is_visible() {
-                    if visible {
-                        let _ = window.hide();
-                    } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
+                toggle_window_visibility(&window);
             }
         }
     }) {
@@ -265,14 +369,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
                 let _ = app_handle.global_shortcut().on_shortcut(default_shortcut, move |app, _shortcut, event| {
                     if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
                         if let Some(window) = app.get_webview_window("main") {
-                            if let Ok(visible) = window.is_visible() {
-                                if visible {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                            }
+                            toggle_window_visibility(&window);
                         }
                     }
                 });
@@ -289,8 +386,9 @@ pub fn debug_log(_msg: String) {
     println!("[Frontend-Debug] {}", _msg);
 }
 
-/// Toggle DWM Acrylic blur on/off based on glassBlur value.
-/// glassBlur = 0 → transparent (DWMSBT_NONE), glassBlur > 0 → blurred (DWMSBT_TRANSIENTWINDOW).
+/// Toggle DWM Acrylic blur on/off based on glassBlur value, and dynamically adjust native corner rounding.
+/// glassBlur = 0 → transparent (DWMSBT_NONE), corner rounding = DWMWCP_DONOTROUND (letting WebGL shape corners).
+/// glassBlur > 0 → blurred (DWMSBT_TRANSIENTWINDOW), corner rounding = DWMWCP_ROUND (letting DWM natively round windows to prevent sharp rect ghost corners).
 #[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
@@ -299,12 +397,25 @@ pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
     const DWMSBT_NONE: u32 = 1;
     const DWMSBT_TRANSIENTWINDOW: u32 = 3;
 
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWCP_ROUND: u32 = 2;
+
     let window = app.get_webview_window("main").ok_or("Window not found")?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let raw_hwnd = hwnd.0 as *mut c_void;
+    
     let backdrop_type = if value > 0 { DWMSBT_TRANSIENTWINDOW } else { DWMSBT_NONE };
     crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop_type)?;
-    eprintln!("[FromZero] DWM Acrylic {}", if value > 0 { "enabled" } else { "disabled" });
+    
+    // Toggle corner rounding dynamically to eliminate sharp corner ghosting on startup/acrylic states
+    let corner_pref = if value > 0 { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
+    crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, corner_pref)?;
+    
+    eprintln!("[FromZero] DWM Acrylic {}, corner rounding set to {}", 
+        if value > 0 { "enabled" } else { "disabled" },
+        if value > 0 { "ROUND" } else { "DONOTROUND" }
+    );
     Ok(())
 }
 
@@ -816,6 +927,22 @@ pub async fn stop_bg_capture() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
         crate::capture::stop();
     }).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_capture_fps(app: AppHandle, fps: u32) -> Result<(), String> {
+    crate::capture::CAPTURE_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+    if crate::capture::is_active() {
+        let window = app.get_webview_window("main").ok_or("Main window not found")?;
+        let pos = window.outer_position().map_err(|e| e.to_string())?;
+        let size = window.outer_size().map_err(|e| e.to_string())?;
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let pad_phys = (40.0 * scale).round() as u32;
+        tokio::task::spawn_blocking(move || {
+            crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
+        }).await.map_err(|e| e.to_string())??;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

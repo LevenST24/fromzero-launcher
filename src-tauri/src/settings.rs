@@ -13,11 +13,29 @@ pub struct GlassSettings {
     pub border_opacity: f64,
     #[serde(default = "default_glass_fps")]
     pub glass_fps: i32,
+    #[serde(default = "default_strength")]
+    pub strength: i32,
+    #[serde(default = "default_chroma")]
+    pub chroma: f64,
+    #[serde(default = "default_frost")]
+    pub frost: f64,
+    #[serde(default = "default_beer")]
+    pub beer: i32,
+    #[serde(default = "default_caustic")]
+    pub caustic: f64,
+    #[serde(default = "default_squircle_n")]
+    pub squircle_n: f64,
 }
 
 fn default_glass_blur() -> i32 { 8 }
 fn default_border_opacity() -> f64 { 0.60 }
 fn default_glass_fps() -> i32 { 60 }
+fn default_strength() -> i32 { 30 }
+fn default_chroma() -> f64 { 0.045 }
+fn default_frost() -> f64 { 3.0 }
+fn default_beer() -> i32 { 15 }
+fn default_caustic() -> f64 { 0.6 }
+fn default_squircle_n() -> f64 { 4.5 }
 
 impl Default for GlassSettings {
     fn default() -> Self {
@@ -25,6 +43,12 @@ impl Default for GlassSettings {
             glass_blur: default_glass_blur(),
             border_opacity: default_border_opacity(),
             glass_fps: default_glass_fps(),
+            strength: default_strength(),
+            chroma: default_chroma(),
+            frost: default_frost(),
+            beer: default_beer(),
+            caustic: default_caustic(),
+            squircle_n: default_squircle_n(),
         }
     }
 }

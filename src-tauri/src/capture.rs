@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     frame::Frame,
@@ -27,6 +27,8 @@ pub static CROP: Mutex<(u32, u32, u32, u32)> = Mutex::new((0, 0, 1, 1));
 static SEQ: AtomicU64 = AtomicU64::new(0);
 // Capture session control handle
 static CONTROL: OnceLock<Mutex<Option<windows_capture::capture::CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>>> = OnceLock::new();
+// Global target capture FPS
+pub static CAPTURE_FPS: AtomicU32 = AtomicU32::new(60);
 
 fn control_slot() -> &'static Mutex<Option<windows_capture::capture::CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>> {
     CONTROL.get_or_init(|| Mutex::new(None))
@@ -76,6 +78,12 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     }
 }
 
+/// Check if capture session is active
+pub fn is_active() -> bool {
+    let slot = control_slot().lock().unwrap();
+    slot.is_some()
+}
+
 /// Start graphics capture on the primary monitor.
 /// Coordinates are physical screen pixels.
 pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> Result<(), String> {
@@ -97,12 +105,15 @@ pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> R
 
     *CROP.lock().unwrap() = (x0, y0, x1, y1);
 
+    let fps = CAPTURE_FPS.load(Ordering::Relaxed).max(1);
+    let duration = std::time::Duration::from_nanos((1_000_000_000.0 / fps as f64).round() as u64);
+
     let settings = Settings::new(
         monitor,
         CursorCaptureSettings::WithoutCursor,
         DrawBorderSettings::WithoutBorder,
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
+        MinimumUpdateIntervalSettings::Custom(duration),
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
         (),
@@ -124,3 +135,4 @@ pub fn stop() {
     }
     *LATEST_FRAME.lock().unwrap() = None;
 }
+

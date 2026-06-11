@@ -44,6 +44,28 @@ pub fn get_pinyin(text: &str) -> (String, String) {
     }
     (initials, full)
 }
+pub fn load_apps_cache(app_handle: &AppHandle) -> Option<Vec<AppItem>> {
+    let cache_dir = app_handle.path().app_cache_dir().ok()?;
+    let cache_path = cache_dir.join("apps_cache.json");
+    if cache_path.exists() {
+        if let Ok(content) = fs::read_to_string(&cache_path) {
+            if let Ok(apps) = serde_json::from_str::<Vec<AppItem>>(&content) {
+                return Some(apps);
+            }
+        }
+    }
+    None
+}
+
+pub fn save_apps_cache(app_handle: &AppHandle, apps: &[AppItem]) -> Result<(), String> {
+    let cache_dir = app_handle.path().app_cache_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    let cache_path = cache_dir.join("apps_cache.json");
+    let content = serde_json::to_string(apps).map_err(|e| e.to_string())?;
+    fs::write(&cache_path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 
 pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     let mut apps = Vec::new();

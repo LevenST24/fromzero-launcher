@@ -94,10 +94,31 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .register_uri_scheme_protocol("bgframe", |_app, _request| {
+            let since_seq: Option<u64> = _request.uri().query()
+                .and_then(|q| {
+                    q.split('&')
+                        .find(|pair| pair.starts_with("since="))
+                        .and_then(|pair| pair.split('=').nth(1))
+                        .and_then(|val| val.parse::<u64>().ok())
+                });
+
             let frame_opt = {
                 let guard = crate::capture::LATEST_FRAME.lock().unwrap();
                 guard.clone()
             };
+
+            if let Some(since) = since_seq {
+                if let Some(ref f) = frame_opt {
+                    if f.seq <= since {
+                        return tauri::http::Response::builder()
+                            .status(204)
+                            .header("Access-Control-Allow-Origin", "*")
+                            .body(Vec::new())
+                            .unwrap();
+                    }
+                }
+            }
+
             match frame_opt {
                 Some(f) => {
                     let data = (*f.data).clone();
@@ -142,6 +163,7 @@ pub fn run() {
             commands::open_file,
             commands::start_bg_capture,
             commands::stop_bg_capture,
+            commands::set_capture_fps,
         ])
         .setup(|app| {
             let Some(window) = app.get_webview_window("main") else {
@@ -151,6 +173,7 @@ pub fn run() {
 
             // 1. Load settings
             let settings = settings::load_settings(app.handle());
+            crate::capture::CAPTURE_FPS.store(settings.glass_settings.glass_fps as u32, std::sync::atomic::Ordering::Relaxed);
 
             // 1.5. Clear old low-res icon cache to force extraction of high-res icons
             let cache_dir = app.path().app_cache_dir().unwrap_or_default();
@@ -237,14 +260,14 @@ fn remove_dwm_border(window: &WebviewWindow) {
     use std::ffi::c_void;
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWA_BORDER_COLOR: u32 = 34;
-    const DWMWCP_ROUND: u32 = 2;
+    const DWMWCP_DONOTROUND: u32 = 1;
     const DWM_COLOR_NONE: u32 = 0xFFFFFFFE;
 
     if let Ok(hwnd) = window.hwnd() {
         let raw_hwnd = hwnd.0 as *mut c_void;
-        match dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND) {
-            Ok(()) => eprintln!("[FromZero] ✓ Native DWM window rounding enabled"),
-            Err(e) => eprintln!("[FromZero] DWM rounding failed: {e}"),
+        match dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND) {
+            Ok(()) => eprintln!("[FromZero] ✓ Native DWM window rounding disabled (letting WebGL shape corners)"),
+            Err(e) => eprintln!("[FromZero] DWM disable rounding failed: {e}"),
         }
         match dwm::set_dwm_attribute(raw_hwnd, DWMWA_BORDER_COLOR, DWM_COLOR_NONE) {
             Ok(()) => eprintln!("[FromZero] ✓ Native DWM border color removed"),

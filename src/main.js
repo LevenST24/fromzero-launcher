@@ -39,6 +39,19 @@ if (window.__TAURI__) {
   convertFileSrc = (path) => `https://asset.localhost/${encodeURIComponent(path)}`;
 }
 
+// Global error diagnostics forwarded to the Rust backend console
+window.onerror = function(message, source, lineno, colno, error) {
+  const msg = `[Global JS Error] ${message} at ${source}:${lineno}:${colno}`;
+  console.error(msg);
+  invoke("debug_log", { msg: msg }).catch(() => {});
+  return false;
+};
+window.addEventListener("unhandledrejection", function(event) {
+  const msg = `[Unhandled Promise Rejection] ${event.reason}`;
+  console.error(msg);
+  invoke("debug_log", { msg: msg }).catch(() => {});
+});
+
 // App state variables
 let appItems = [];
 let filteredItems = [];
@@ -49,7 +62,13 @@ let settings = {};
 let glassSettings = {
   glassBlur: 8,
   borderOpacity: 0.60,
-  glassFps: 60
+  glassFps: 60,
+  strength: 30,
+  chroma: 0.045,
+  frost: 3.0,
+  beer: 15,
+  caustic: 0.6,
+  squircleN: 4.5
 };
 let backupGlassSettings = null;
 
@@ -76,20 +95,51 @@ let lastMouseX = 0;
 let lastMouseY = 0;
 let pumping = false;
 let activeGlassFps = 60;
-let displacementCanvas = null;
 let peekTimer = null;
 
 // WebGL state
 let gl = null;
 let glProgram = null;
 let textureImage = null;
-let textureDisp = null;
-let imageLocation = null;
-let dispLocation = null;
-let scaleXLocation = null;
-let scaleYLocation = null;
 let webglInitialized = false;
 let lastRenderedSeq = 0;
+
+// Mouse tracking for dynamic spotlight & metaballs
+let currentMouseX = 320;
+let currentMouseY = 225;
+document.addEventListener("mousemove", (e) => {
+  currentMouseX = e.clientX;
+  currentMouseY = e.clientY;
+});
+
+// Uniform locations
+let resolutionLocation = null;
+let centerLocation = null;
+let halfSizeLocation = null;
+let cornerLocation = null;
+let bandLocation = null;
+let strengthLocation = null;
+let magnifyLocation = null;
+let chromaLocation = null;
+let imageLocation = null;
+let squircleNLocation = null;
+let specularLocation = null;
+let frostLocation = null;
+let beerThicknessLocation = null;
+let causticStrengthLocation = null;
+let mouseLocation = null;
+let dprLocation = null;
+let tintLocation = null;
+let thicknessLocation = null;
+let domeHeightLocation = null;
+let iorLocation = null;
+let bgDistLocation = null;
+
+// State machine & lifecycle control
+let glassState = "Acrylic"; // "Acrylic", "Starting", "LiquidGlass", "Stopping"
+let captureGeneration = 0;
+let watchdogTimer = null;
+let lastFrameTime = 0;
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
@@ -125,28 +175,77 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.2.2-preview";
+const APP_VERSION = "v0.2.2";
 
 // =============================================
-// Window Focus/Blur Management (JS-side with debounce)
+// Window Focus/Blur Management & State Machine
 // =============================================
+
+function startWatchdog() {
+  stopWatchdog();
+  watchdogTimer = setInterval(async () => {
+    if (pumping && (glassState === "LiquidGlass" || glassState === "Starting")) {
+      const inactiveTime = Date.now() - lastFrameTime;
+      if (inactiveTime > 1500) {
+        console.warn(`[FromZero] Watchdog: No new frames for ${inactiveTime}ms. Restarting background capture session...`);
+        lastFrameTime = Date.now(); // Reset time to avoid multiple triggers
+        try {
+          const gen = ++captureGeneration;
+          await invoke("stop_bg_capture");
+          if (gen === captureGeneration && pumping) {
+            await invoke("start_bg_capture");
+          }
+        } catch (e) {
+          console.error("[FromZero] Watchdog restart failed:", e);
+        }
+      }
+    }
+  }, 1000);
+}
+
+function stopWatchdog() {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+}
 
 async function handleWindowFocus() {
+  const gen = ++captureGeneration;
   lastShowTime = Date.now();
-  const container = document.getElementById("launcher-container");
-  if (container) container.classList.remove("blurred");
+  glassState = "Starting";
+  pumping = true;
+  lastFrameTime = Date.now();
 
-  // Start background capture and frame pumping
+  const container = document.getElementById("launcher-container");
+  if (container) {
+    container.classList.add("blurred");
+    container.classList.remove("liquid-glass-active");
+  }
+
+  // Keep DWM Acrylic active during starting phase
+  try {
+    await invoke("set_blur", { value: glassSettings.glassBlur });
+  } catch (_) {}
+
   try {
     await invoke("start_bg_capture");
-    pumping = true;
+    if (gen !== captureGeneration || !pumping) return;
     pumpFrames();
-    // Disable DWM Acrylic when live capture is active to avoid double-blur overlay
-    try { await invoke("set_blur", { value: 0 }); } catch (_) {}
+    startWatchdog();
   } catch (e) {
     console.warn("[FromZero] Live glass capture unavailable, fallback to Acrylic:", e);
+    if (gen !== captureGeneration) return;
     pumping = false;
-    try { await invoke("set_blur", { value: glassSettings.glassBlur }); } catch (_) {}
+    glassState = "Acrylic";
+    stopWatchdog();
+    if (container) {
+      container.classList.add("blurred");
+      container.classList.remove("liquid-glass-active");
+    }
+    try {
+      await invoke("set_blur", { value: glassSettings.glassBlur });
+    } catch (_) {}
   }
 
   setTimeout(() => {
@@ -159,16 +258,26 @@ async function handleWindowFocus() {
 
 window.addEventListener("focus", handleWindowFocus);
 
-window.addEventListener("blur", () => {
-  const container = document.getElementById("launcher-container");
-  if (container) container.classList.add("blurred");
-
-  // Stop background capture immediately on blur to save GPU/CPU resources
+window.addEventListener("blur", async () => {
+  const gen = ++captureGeneration;
+  glassState = "Stopping";
   pumping = false;
-  try { invoke("stop_bg_capture"); } catch (_) {}
+  stopWatchdog();
+
+  const container = document.getElementById("launcher-container");
+  if (container) {
+    container.classList.add("blurred");
+    container.classList.remove("liquid-glass-active");
+  }
 
   // Restore DWM Acrylic for a smooth show/fade transition next time
-  try { invoke("set_blur", { value: glassSettings.glassBlur }); } catch (_) {}
+  try {
+    await invoke("set_blur", { value: glassSettings.glassBlur });
+  } catch (_) {}
+
+  try {
+    await invoke("stop_bg_capture");
+  } catch (_) {}
 
   const timeSinceShow = Date.now() - lastShowTime;
   if (timeSinceShow < 300) {
@@ -178,7 +287,7 @@ window.addEventListener("blur", () => {
     return;
   }
   setTimeout(async () => {
-    if (!document.hasFocus()) {
+    if (!document.hasFocus() && glassState === "Stopping") {
       try {
         await appWindow.hide();
       } catch (e) {
@@ -194,7 +303,6 @@ window.addEventListener("blur", () => {
 function getEngineName(prefix) {
   const knownNames = { g: "Google", b: "百度", bi: "Bing", gh: "GitHub" };
   if (knownNames[prefix]) return knownNames[prefix];
-  // Fallback: capitalize first letter of prefix
   return prefix.charAt(0).toUpperCase() + prefix.slice(1);
 }
 
@@ -217,33 +325,34 @@ function clearChildren(el) {
   }
 }
 
-
-
 // Helper: Apply visual configurations to DOM/CSS and SVG filter scales in real time
 function applyVisualSettings(config) {
   const container = document.getElementById("launcher-container");
   if (!container) return;
 
   activeGlassFps = config.glassFps || 60;
+  glassSettings.glassBlur = config.glassBlur;
+  glassSettings.borderOpacity = config.borderOpacity;
+  glassSettings.glassFps = config.glassFps;
+  glassSettings.strength = config.strength ?? glassSettings.strength;
+  glassSettings.chroma = config.chroma ?? glassSettings.chroma;
+  glassSettings.frost = config.frost ?? glassSettings.frost;
+  glassSettings.beer = config.beer ?? glassSettings.beer;
+  glassSettings.caustic = config.caustic ?? glassSettings.caustic;
+  glassSettings.squircleN = config.squircleN ?? glassSettings.squircleN;
 
-  // Border opacities (static angle, no cursor tracking, mapping coefficients raised for better visibility)
   const b1 = (config.borderOpacity * 0.7).toFixed(3);
   const b2 = (config.borderOpacity * 0.5).toFixed(3);
   container.style.setProperty("--border1-opacity", b1);
   container.style.setProperty("--border2-opacity", b2);
 
-  // Set canvas blur CSS custom property
-  container.style.setProperty("--canvas-blur", `${Math.max(0, config.glassBlur / 4)}px`);
+  // Set canvas blur CSS custom property directly (full range up to 30px)
+  container.style.setProperty("--canvas-blur", `${config.glassBlur}px`);
 
-  // === Glass tint layer: opacity controlled by glassBlur slider ===
-  // Higher glassBlur = more opaque tint = more frosted look (covers DWM Acrylic blur more).
-  // Lower glassBlur = more transparent tint = DWM Acrylic blur more visible.
   const glassBlurLayer = document.querySelector('.glass-blur-layer');
   if (glassBlurLayer) {
     const isDark = !document.documentElement.hasAttribute('data-theme') ||
                    document.documentElement.getAttribute('data-theme') === 'dark';
-    // glassBlur 0→0.01 (nearly invisible), 1→0.018, 8→0.074, 30→0.25
-    // Low multiplier ensures smooth transition from transparent(0) to slightly frosted(1)
     const tintOpacity = Math.max(0.01, config.glassBlur * 0.008 + 0.01).toFixed(3);
     if (isDark) {
       glassBlurLayer.style.backgroundColor = `rgba(18, 18, 24, ${tintOpacity})`;
@@ -252,9 +361,8 @@ function applyVisualSettings(config) {
     }
   }
 
-  // Toggle DWM Acrylic: glassBlur=0 → transparent, glassBlur>0 → blurred desktop
-  // Debounced to avoid flooding the Rust backend during slider drag
-  if (!pumping) {
+  // Toggle DWM Acrylic: only when not in LiquidGlass or Starting state
+  if (glassState === "Acrylic" || glassState === "Stopping") {
     clearTimeout(setBlurTimeout);
     setBlurTimeout = setTimeout(() => {
       try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
@@ -262,12 +370,34 @@ function applyVisualSettings(config) {
   }
 }
 
+// 300ms debounced invoke to set_capture_fps
+const debouncedSetCaptureFps = (() => {
+  let timer = null;
+  return (fps) => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (pumping) {
+        try {
+          await invoke("set_capture_fps", { fps });
+        } catch (e) {
+          console.error("[FromZero] Failed to set capture FPS:", e);
+        }
+      }
+    }, 300);
+  };
+})();
+
 // Helper: Initialize sliders listeners
 function initSliderListeners() {
   const sliders = [
     { id: "slider-glass-blur", valId: "val-glass-blur", key: "glassBlur", isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true },
-    { id: "slider-glass-fps", valId: "val-glass-fps", key: "glassFps", isFloat: false }
+    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true, isBorder: true },
+    { id: "slider-strength", valId: "val-strength", key: "strength", isFloat: false },
+    { id: "slider-chroma", valId: "val-chroma", key: "chroma", isFloat: true, isDispersion: true },
+    { id: "slider-frost", valId: "val-frost", key: "frost", isFloat: true },
+    { id: "slider-beer", valId: "val-beer", key: "beer", isFloat: false },
+    { id: "slider-caustic", valId: "val-caustic", key: "caustic", isFloat: true },
+    { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true }
   ];
 
   sliders.forEach(s => {
@@ -277,14 +407,20 @@ function initSliderListeners() {
       el.addEventListener("input", () => {
         const val = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
         if (valEl) {
-          valEl.textContent = s.isFloat ? val.toFixed(2) : val;
+          if (s.isDispersion) {
+            valEl.textContent = val.toFixed(3);
+          } else if (s.isBorder) {
+            valEl.textContent = val.toFixed(2);
+          } else if (s.isFloat) {
+            valEl.textContent = val.toFixed(1);
+          } else {
+            valEl.textContent = val;
+          }
         }
 
-        // Apply sliders state immediately for live feedback
         const currentConfig = readSlidersState();
         applyVisualSettings(currentConfig);
 
-        // Make modal overlay temporarily semi-transparent for visual previewing
         if (settingsOverlay) {
           settingsOverlay.classList.add("peek");
           clearTimeout(peekTimer);
@@ -295,6 +431,29 @@ function initSliderListeners() {
       });
     }
   });
+
+  const fpsEl = document.getElementById("slider-glass-fps");
+  const fpsValEl = document.getElementById("val-glass-fps");
+  if (fpsEl) {
+    fpsEl.addEventListener("input", () => {
+      const val = parseInt(fpsEl.value);
+      if (fpsValEl) {
+        fpsValEl.textContent = val;
+      }
+      glassSettings.glassFps = val;
+      activeGlassFps = val;
+      
+      if (settingsOverlay) {
+        settingsOverlay.classList.add("peek");
+        clearTimeout(peekTimer);
+        peekTimer = setTimeout(() => {
+          settingsOverlay.classList.remove("peek");
+        }, 1200);
+      }
+      
+      debouncedSetCaptureFps(val);
+    });
+  }
 }
 
 // Helper: Read sliders values
@@ -302,7 +461,13 @@ function readSlidersState() {
   return {
     glassBlur: parseInt(document.getElementById("slider-glass-blur").value),
     borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value),
-    glassFps: parseInt(document.getElementById("slider-glass-fps").value)
+    glassFps: parseInt(document.getElementById("slider-glass-fps").value),
+    strength: parseInt(document.getElementById("slider-strength").value),
+    chroma: parseFloat(document.getElementById("slider-chroma").value),
+    frost: parseFloat(document.getElementById("slider-frost").value),
+    beer: parseInt(document.getElementById("slider-beer").value),
+    caustic: parseFloat(document.getElementById("slider-caustic").value),
+    squircleN: parseFloat(document.getElementById("slider-squircle-n").value)
   };
 }
 
@@ -310,8 +475,14 @@ function readSlidersState() {
 function syncSlidersToConfig(config) {
   const mappings = [
     { id: "slider-glass-blur", valId: "val-glass-blur", val: config.glassBlur, isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true },
-    { id: "slider-glass-fps", valId: "val-glass-fps", val: config.glassFps, isFloat: false }
+    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true, isBorder: true },
+    { id: "slider-glass-fps", valId: "val-glass-fps", val: config.glassFps, isFloat: false },
+    { id: "slider-strength", valId: "val-strength", val: config.strength, isFloat: false },
+    { id: "slider-chroma", valId: "val-chroma", val: config.chroma, isFloat: true, isDispersion: true },
+    { id: "slider-frost", valId: "val-frost", val: config.frost, isFloat: true },
+    { id: "slider-beer", valId: "val-beer", val: config.beer, isFloat: false },
+    { id: "slider-caustic", valId: "val-caustic", val: config.caustic, isFloat: true },
+    { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true }
   ];
 
   mappings.forEach(m => {
@@ -320,7 +491,15 @@ function syncSlidersToConfig(config) {
     if (el) {
       el.value = m.val;
       if (valEl) {
-        valEl.textContent = m.isFloat ? m.val.toFixed(2) : m.val;
+        if (m.isDispersion) {
+          valEl.textContent = m.val.toFixed(3);
+        } else if (m.isBorder) {
+          valEl.textContent = m.val.toFixed(2);
+        } else if (m.isFloat) {
+          valEl.textContent = m.val.toFixed(1);
+        } else {
+          valEl.textContent = m.val;
+        }
       }
     }
   });
@@ -333,66 +512,17 @@ const WIN_W = 640;
 const WIN_H = 450;
 const PAD_X = 40;
 const PAD_Y = 40;
-const CORNER = 8;
-const BAND = 28;
-
-function buildDisplacementMap() {
-  const w = WIN_W + PAD_X * 2; // 720
-  const h = WIN_H + PAD_Y * 2; // 530
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext("2d");
-  const img = ctx.createImageData(w, h);
-  const d = img.data;
-  const cx = w / 2;
-  const cy = h / 2;
-  const hw = WIN_W / 2 - CORNER;
-  const hh = WIN_H / 2 - CORNER;
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const qx = Math.max(Math.abs(x - cx) - hw, 0);
-      const qy = Math.max(Math.abs(y - cy) - hh, 0);
-      const q_len = Math.hypot(qx, qy);
-      let nx = 0;
-      let ny = 0;
-      if (q_len > 0) {
-        const dist = q_len - CORNER; // SDF to round-rect boundary (<0 is inside)
-        if (dist > -BAND && dist < 0) {
-          const gx = (qx / q_len) * Math.sign(x - cx);
-          const gy = (qy / q_len) * Math.sign(y - cy);
-          const t = 1 + dist / BAND; // 0 (inner boundary) -> 1 (outer boundary)
-          const k = t * t;           // Quadratic transition
-          nx = gx * k;
-          ny = gy * k;
-        }
-      }
-      const i = (y * w + x) * 4;
-      d[i]     = Math.round(128 + nx * 127); // R channel: X displacement
-      d[i + 1] = Math.round(128 + ny * 127); // G channel: Y displacement
-      d[i + 2] = 128;
-      d[i + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  displacementCanvas = cv;
-  if (webglInitialized) {
-    gl.bindTexture(gl.TEXTURE_2D, textureDisp);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
-  }
-  const dispMap = document.getElementById("disp-map");
-  if (dispMap) {
-    dispMap.setAttribute("href", cv.toDataURL());
-  }
-}
+const CORNER = 24.0;
 
 function compileShader(gl, source, type) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    console.error("[FromZero] Shader compile error:", gl.getShaderInfoLog(shader));
+    const log = gl.getShaderInfoLog(shader);
+    const msg = "[FromZero] Shader compile error (" + (type === gl.VERTEX_SHADER ? "VERTEX" : "FRAGMENT") + "):\n" + log;
+    console.error(msg);
+    invoke("debug_log", { msg: msg }).catch(() => {});
     gl.deleteShader(shader);
     return null;
   }
@@ -401,15 +531,17 @@ function compileShader(gl, source, type) {
 
 function initWebGL(canvas) {
   try {
-    gl = canvas.getContext("webgl", { alpha: false, depth: false, antialias: false, preserveDrawingBuffer: true });
+    gl = canvas.getContext("webgl2", { alpha: true, depth: false, antialias: true, preserveDrawingBuffer: true, premultipliedAlpha: false });
     if (!gl) {
-      console.warn("[FromZero] WebGL context not supported");
+      const msg = "[FromZero] WebGL2 context not supported, falling back to WebGL1 (Premium shader disabled)";
+      console.warn(msg);
+      invoke("debug_log", { msg: msg }).catch(() => {});
       return false;
     }
 
-    const vsSource = `
-      attribute vec2 a_position;
-      varying vec2 v_texCoord;
+    const vsSource = `#version 300 es
+      in vec2 a_position;
+      out vec2 v_texCoord;
       void main() {
         v_texCoord = a_position * 0.5 + 0.5;
         v_texCoord.y = 1.0 - v_texCoord.y;
@@ -417,18 +549,297 @@ function initWebGL(canvas) {
       }
     `;
 
-    const fsSource = `
-      precision mediump float;
-      varying vec2 v_texCoord;
+    const fsSource = `#version 300 es
+      precision highp float;
+      in vec2 v_texCoord;
+      out vec4 fragColor;
+
       uniform sampler2D u_image;
-      uniform sampler2D u_displacementMap;
-      uniform float u_scaleX;
-      uniform float u_scaleY;
+      uniform vec2 u_resolution;
+      uniform vec2 u_center;
+      uniform vec2 u_halfSize;
+      uniform float u_corner;
+      uniform float u_band;
+      uniform float u_strength;
+      uniform float u_magnify;
+      uniform float u_chroma;
+      uniform vec2 u_mouse;
+      uniform float u_specularStrength;
+      uniform float u_frost;
+      uniform float u_beerThickness;
+      uniform float u_causticStrength;
+      uniform float u_squircleN;
+      uniform float u_dpr;
+      uniform vec4 u_tint;
+
+      // New Height Field & Snell Refraction uniforms
+      uniform float u_thickness;
+      uniform float u_domeHeight;
+      uniform float u_ior;
+      uniform float u_bgDist;
+
+      // Color conversion formulas: sRGB <-> LCh (via XYZ and Lab)
+      vec3 srgb2rgb(vec3 c) {
+        return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+      }
+      vec3 rgb2srgb(vec3 c) {
+        return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+      }
+      vec3 rgb2xyz(vec3 c) {
+        mat3 m = mat3(
+          0.4124, 0.2126, 0.0193,
+          0.3576, 0.7152, 0.1192,
+          0.1805, 0.0722, 0.9505
+        );
+        return c * m;
+      }
+      vec3 xyz2rgb(vec3 c) {
+        mat3 m = mat3(
+          3.2406, -0.9689, 0.0557,
+          -1.5372, 1.8758, -0.2040,
+          -0.4986, 0.0415, 1.0570
+        );
+        return c * m;
+      }
+      float xyz_f(float t) {
+        return mix(7.787 * t + 16.0 / 116.0, pow(t, 1.0 / 3.0), step(0.008856, t));
+      }
+      vec3 xyz2lab(vec3 c) {
+        vec3 white = vec3(0.950456, 1.0, 1.088754);
+        vec3 cn = c / white;
+        vec3 f = vec3(xyz_f(cn.x), xyz_f(cn.y), xyz_f(cn.z));
+        return vec3(116.0 * f.y - 16.0, 500.0 * (f.x - f.y), 200.0 * (f.y - f.z));
+      }
+      float lab_f_inv(float t) {
+        return mix(0.1284 * (t - 16.0 / 116.0), t * t * t, step(0.206897, t));
+      }
+      vec3 lab2xyz(vec3 c) {
+        vec3 white = vec3(0.950456, 1.0, 1.088754);
+        float p = (c.x + 16.0) / 116.0;
+        return white * vec3(lab_f_inv(p + c.y / 500.0), lab_f_inv(p), lab_f_inv(p - c.z / 200.0));
+      }
+      vec3 lab2lch(vec3 c) {
+        float l = c.x;
+        float c_val = length(c.yz);
+        float h = atan(c.z, c.y) * 57.2957795;
+        if (h < 0.0) h += 360.0;
+        return vec3(l, c_val, h);
+      }
+      vec3 lch2lab(vec3 c) {
+        float h_rad = c.z * 0.01745329;
+        return vec3(c.x, c.y * cos(h_rad), c.y * sin(h_rad));
+      }
+      vec3 srgb2lch(vec3 c) {
+        return lab2lch(xyz2lab(rgb2xyz(srgb2rgb(c))));
+      }
+      vec3 lch2srgb(vec3 c) {
+        return rgb2srgb(xyz2rgb(lab2xyz(lch2lab(c))));
+      }
+
+      // SDF functions
+      float superellipseCornerSDF(vec2 p, float r, float n) {
+        p = abs(p);
+        return pow(pow(max(p.x, 0.0), n) + pow(max(p.y, 0.0), n), 1.0 / n) - r;
+      }
+
+      float roundedRectSDF(vec2 p, vec2 center, vec2 size, float cornerRadius, float n) {
+        p -= center;
+        vec2 extents = size * 0.5 - vec2(cornerRadius);
+        vec2 q = abs(p) - extents;
+        if (q.x > 0.0 && q.y > 0.0) {
+          return superellipseCornerSDF(q, cornerRadius, n);
+        }
+        return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - cornerRadius;
+      }
+
+      // Combined Scene SDF function (centered round-rect)
+      float getSDF(vec2 p) {
+        vec2 cardSize = (u_halfSize + vec2(u_corner)) * 2.0;
+        return roundedRectSDF(p, vec2(0.0), cardSize, u_corner, u_squircleN);
+      }
+
+      float random(vec2 st) {
+        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+      }
+
+      // 6-Channel Chromatic Dispersion sampling to create premium realistic rainbow refractions
+      vec3 sample6ChannelDispersion(sampler2D tex, vec2 baseUV, vec2 normal, float strength, float chroma) {
+        float r_ior = 1.0 + chroma * 1.5;
+        float y_ior = 1.0 + chroma * 0.9;
+        float g_ior = 1.0 + chroma * 0.3;
+        float c_ior = 1.0 - chroma * 0.3;
+        float b_ior = 1.0 - chroma * 0.9;
+        float v_ior = 1.0 - chroma * 1.5;
+        
+        vec2 offR = normal * strength * r_ior;
+        vec2 offY = normal * strength * y_ior;
+        vec2 offG = normal * strength * g_ior;
+        vec2 offC = normal * strength * c_ior;
+        vec2 offB = normal * strength * b_ior;
+        vec2 offV = normal * strength * v_ior;
+        
+        vec3 cRed    = texture(tex, clamp(baseUV + offR, 0.001, 0.999)).rgb;
+        vec3 cYellow = texture(tex, clamp(baseUV + offY, 0.001, 0.999)).rgb;
+        vec3 cGreen  = texture(tex, clamp(baseUV + offG, 0.001, 0.999)).rgb;
+        vec3 cCyan   = texture(tex, clamp(baseUV + offC, 0.001, 0.999)).rgb;
+        vec3 cBlue   = texture(tex, clamp(baseUV + offB, 0.001, 0.999)).rgb;
+        vec3 cViolet = texture(tex, clamp(baseUV + offV, 0.001, 0.999)).rgb;
+        
+        // Convert colors to 6-channel coordinates
+        float r = cRed.r * 0.5;
+        float g = cGreen.g * 0.5;
+        float b = cBlue.b * 0.5;
+        float y = (2.0 * cYellow.r + 2.0 * cYellow.g - cYellow.b) / 6.0;
+        float c = (2.0 * cCyan.g + 2.0 * cCyan.b - cCyan.r) / 6.0;
+        float v = (2.0 * cViolet.b + 2.0 * cViolet.r - cViolet.g) / 6.0;
+        
+        // Reconstruct back to RGB
+        vec3 rgb;
+        rgb.r = r + (2.0 * v + 2.0 * y - c) / 3.0;
+        rgb.g = g + (2.0 * y + 2.0 * c - v) / 3.0;
+        rgb.b = b + (2.0 * c + 2.0 * v - y) / 3.0;
+        return rgb;
+      }
+
+      // Neutral clear glass absorption (absorbs all channels equally to prevent greenish/blueish tint)
+      vec3 applyBeerAbsorption(vec3 color, float t, float thickness) {
+        vec3 absorptionCoeff = vec3(0.012, 0.012, 0.012);
+        // More absorption at edge (when t is small) and less in the center (when t is large)
+        float pathLength = (1.0 - t * 0.5) * thickness;
+        vec3 transmission = exp(-absorptionCoeff * pathLength);
+        return color * transmission;
+      }
+
+      // Height field: circular edge bevel + parabolic central dome
+      float heightField(vec2 p) {
+        float d = -getSDF(p); // d is positive inside
+        if (d <= 0.0) return 0.0;
+        
+        // 1) bevel: edge bevel profile from 0 to 1
+        float x = clamp(d / u_band, 0.0, 1.0);
+        float bevel = sqrt(max(1.0 - (1.0 - x) * (1.0 - x), 0.0));
+        
+        // 2) dome: parabolic curvature
+        vec2 q = p / (u_halfSize + vec2(u_corner));
+        float dome = max(1.0 - dot(q, q), 0.0);
+        
+        return u_thickness * bevel + u_domeHeight * dome;
+      }
+
       void main() {
-        vec4 disp = texture2D(u_displacementMap, v_texCoord);
-        vec2 offset = vec2(disp.r - 0.5, disp.g - 0.5) * 2.0;
-        vec2 uv = v_texCoord + vec2(offset.x * u_scaleX, offset.y * u_scaleY);
-        gl_FragColor = texture2D(u_image, clamp(uv, 0.0, 1.0));
+        vec2 px = v_texCoord * u_resolution;
+        vec2 p = px - u_center;
+        
+        float dC = -getSDF(p);
+        float zR = u_band;
+        
+        // Calculate normal vector via height gradient finite differences
+        float e = 1.5;
+        float dR = -getSDF(p + vec2(e, 0.0));
+        float dL = -getSDF(p - vec2(e, 0.0));
+        float dU = -getSDF(p + vec2(0.0, e));
+        float dD = -getSDF(p - vec2(0.0, e));
+        
+        float hC = heightField(p);
+        float hR = heightField(p + vec2(e, 0.0));
+        float hL = heightField(p - vec2(e, 0.0));
+        float hU = heightField(p + vec2(0.0, e));
+        float hD = heightField(p - vec2(0.0, e));
+        
+        vec2 hGrad = vec2(hR - hL, hU - hD) / (2.0 * e);
+        vec3 N = normalize(vec3(-hGrad, 1.0));
+        
+        // Snell Refraction
+        vec3 I = vec3(0.0, 0.0, -1.0); // incident vector
+        
+        // 1. Refract entering the front glass surface
+        vec3 R1 = refract(I, N, 1.0 / u_ior);
+        if (length(R1) < 0.0001) R1 = refract(I, N, 1.0 / 1.5); // fallback
+        
+        // Offset inside the glass medium
+        vec2 offset1 = R1.xy / max(-R1.z, 0.0001) * hC;
+        
+        // 2. Refract exiting the flat back glass surface
+        vec3 R2 = refract(R1, vec3(0.0, 0.0, 1.0), u_ior);
+        if (length(R2) < 0.0001) R2 = R1; // fallback
+        
+        // Offset in the air gap from glass to background
+        vec2 offset2 = R2.xy / max(-R2.z, 0.0001) * u_bgDist;
+        
+        vec2 refrPx = offset1 + offset2;
+        vec2 refrUV = refrPx / u_resolution;
+
+        // Frosting noise offset
+        float angle = random(v_texCoord) * 6.283185;
+        float dist = sqrt(random(v_texCoord + 0.5)) * u_frost * 4.0;
+        vec2 noise_off = vec2(cos(angle), sin(angle)) / u_resolution * dist;
+        
+        vec2 baseUV = v_texCoord + refrUV + noise_off;
+        
+        // Chromatic dispersion
+        vec2 normal2D = length(N.xy) > 0.0001 ? normalize(N.xy) : vec2(0.0);
+        vec3 glassColor = sample6ChannelDispersion(u_image, baseUV, normal2D, length(refrUV) * 0.8, u_chroma);
+        
+        // Apply colorless transparent Beer's absorption
+        float t = clamp(dC / zR, 0.0, 1.0);
+        glassColor = applyBeerAbsorption(glassColor, t, u_beerThickness);
+        
+        // Apply theme tint
+        glassColor = mix(glassColor, u_tint.rgb, u_tint.a);
+        
+        // LCh color space correction: boost L and C near edges to prevent gloomy gray zones
+        vec3 glassLCh = srgb2lch(glassColor);
+        float edgeVal = 1.0 - t; // 0.0 at center, 1.0 at edge
+        glassLCh.x += 18.0 * edgeVal * u_specularStrength;
+        glassLCh.y += 10.0 * edgeVal * u_specularStrength;
+        glassLCh.x = clamp(glassLCh.x, 0.0, 100.0);
+        glassColor = lch2srgb(glassLCh);
+        
+        // Specular & Caustics setup
+        vec3 viewDir = vec3(0.0, 0.0, 1.0);
+        
+        // Static overhead lighting
+        vec3 light1Dir = normalize(vec3(-0.3, 0.6, 1.0));
+        vec3 half1Dir = normalize(light1Dir + viewDir);
+        float NdotH1 = max(dot(N, half1Dir), 0.0);
+        float spec1 = pow(NdotH1, 75.0) * 1.5;
+        
+        // Soft overhead ambient light
+        vec3 light2Dir = normalize(vec3(0.4, 0.7, 1.0));
+        vec3 half2Dir = normalize(light2Dir + viewDir);
+        float NdotH2 = max(dot(N, half2Dir), 0.0);
+        float spec2 = pow(NdotH2, 40.0) * 0.3;
+        
+        vec3 specularColor = vec3(1.0) * (spec1 * 1.2 + spec2) * u_specularStrength * edgeVal;
+        
+        // Fresnel Sheen (Schlick's approximation)
+        float cosTheta = max(dot(N, viewDir), 0.0);
+        float fresnel = pow(1.0 - cosTheta, 4.0) * 0.38 * edgeVal;
+        vec3 sheenColor = vec3(1.0) * fresnel;
+        
+        // Dynamic Caustics
+        float bandShape = pow(edgeVal * (1.0 - edgeVal * 0.5), 0.65);
+        float rawAlignment = dot(light1Dir.xy, -normal2D);
+        float focusAlignment = max(rawAlignment, 0.0);
+        float caustics = bandShape * focusAlignment * u_causticStrength * 1.8;
+        
+        // Rainbow caustics
+        vec3 causticsColor = vec3(0.85, 1.0, 0.95) * caustics;
+        causticsColor.r *= 1.0 + 0.15 * rawAlignment;
+        causticsColor.b *= 1.0 - 0.15 * rawAlignment;
+        
+        // Top-Left Inner Bevel Stroke
+        float borderWidth = 1.8 * u_dpr;
+        float innerStroke = smoothstep(-borderWidth - 1.0, -borderWidth, -dC) * (1.0 - smoothstep(-1.0, 0.0, -dC));
+        float topBias = max(dot(normal2D, normalize(vec2(-0.5, 0.85))), 0.0);
+        vec3 strokeColor = vec3(1.0) * innerStroke * topBias * 0.65;
+        
+        // Final pixel composite
+        vec3 finalColor = glassColor + specularColor + sheenColor + causticsColor + strokeColor;
+        
+        // Smooth shape edge anti-aliasing with transparent background
+        float edgeAlpha = 1.0 - smoothstep(-1.5, 0.0, -dC);
+        fragColor = vec4(finalColor, edgeAlpha);
       }
     `;
 
@@ -442,7 +853,10 @@ function initWebGL(canvas) {
     gl.linkProgram(glProgram);
 
     if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
-      console.error("[FromZero] WebGL program link error:", gl.getProgramInfoLog(glProgram));
+      const log = gl.getProgramInfoLog(glProgram);
+      const msg = "[FromZero] WebGL program link error:\n" + log;
+      console.error(msg);
+      invoke("debug_log", { msg: msg }).catch(() => {});
       return false;
     }
 
@@ -464,9 +878,30 @@ function initWebGL(canvas) {
     gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
 
     imageLocation = gl.getUniformLocation(glProgram, "u_image");
-    dispLocation = gl.getUniformLocation(glProgram, "u_displacementMap");
-    scaleXLocation = gl.getUniformLocation(glProgram, "u_scaleX");
-    scaleYLocation = gl.getUniformLocation(glProgram, "u_scaleY");
+    resolutionLocation = gl.getUniformLocation(glProgram, "u_resolution");
+    centerLocation = gl.getUniformLocation(glProgram, "u_center");
+    halfSizeLocation = gl.getUniformLocation(glProgram, "u_halfSize");
+    cornerLocation = gl.getUniformLocation(glProgram, "u_corner");
+    bandLocation = gl.getUniformLocation(glProgram, "u_band");
+    strengthLocation = gl.getUniformLocation(glProgram, "u_strength");
+    magnifyLocation = gl.getUniformLocation(glProgram, "u_magnify");
+    chromaLocation = gl.getUniformLocation(glProgram, "u_chroma");
+    
+    // WebGL 2 Premium uniforms
+    squircleNLocation = gl.getUniformLocation(glProgram, "u_squircleN");
+    specularLocation = gl.getUniformLocation(glProgram, "u_specularStrength");
+    frostLocation = gl.getUniformLocation(glProgram, "u_frost");
+    beerThicknessLocation = gl.getUniformLocation(glProgram, "u_beerThickness");
+    causticStrengthLocation = gl.getUniformLocation(glProgram, "u_causticStrength");
+    mouseLocation = gl.getUniformLocation(glProgram, "u_mouse");
+    dprLocation = gl.getUniformLocation(glProgram, "u_dpr");
+    tintLocation = gl.getUniformLocation(glProgram, "u_tint");
+
+    // Height Field & Snell Refraction uniforms
+    thicknessLocation = gl.getUniformLocation(glProgram, "u_thickness");
+    domeHeightLocation = gl.getUniformLocation(glProgram, "u_domeHeight");
+    iorLocation = gl.getUniformLocation(glProgram, "u_ior");
+    bgDistLocation = gl.getUniformLocation(glProgram, "u_bgDist");
 
     textureImage = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, textureImage);
@@ -475,24 +910,54 @@ function initWebGL(canvas) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-    textureDisp = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, textureDisp);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    if (displacementCanvas) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, displacementCanvas);
-    }
-
-    // Apply WebGL canvas filter style to bypass the slow SVG displacement path
     canvas.style.filter = "blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92)";
 
+    // Pre-warm WebGL: render a blank frame to warm up shader compilation and GPU pipeline
+    try {
+      gl.viewport(0, 0, 10, 10);
+      const dummyTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+      gl.useProgram(glProgram);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex);
+      gl.uniform1i(imageLocation, 0);
+      gl.uniform2f(resolutionLocation, 10, 10);
+      gl.uniform2f(centerLocation, 5, 5);
+      gl.uniform2f(halfSizeLocation, 5, 5);
+      gl.uniform1f(cornerLocation, 2);
+      gl.uniform1f(bandLocation, 2);
+      gl.uniform1f(strengthLocation, 0);
+      gl.uniform1f(magnifyLocation, 0);
+      gl.uniform1f(chromaLocation, 0);
+      gl.uniform1f(squircleNLocation, 4.0);
+      gl.uniform1f(specularLocation, 0);
+      gl.uniform1f(frostLocation, 0);
+      gl.uniform1f(beerThicknessLocation, 0);
+      gl.uniform1f(causticStrengthLocation, 0);
+      gl.uniform1f(dprLocation, 1.0);
+      gl.uniform4f(tintLocation, 0, 0, 0, 0);
+      if (thicknessLocation) gl.uniform1f(thicknessLocation, 30.0);
+      if (domeHeightLocation) gl.uniform1f(domeHeightLocation, 6.0);
+      if (iorLocation) gl.uniform1f(iorLocation, 1.5);
+      if (bgDistLocation) gl.uniform1f(bgDistLocation, 40.0);
+      if (mouseLocation) gl.uniform2f(mouseLocation, 0, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.deleteTexture(dummyTex);
+      console.log("[FromZero] WebGL context pre-warmed successfully");
+    } catch (e) {
+      console.warn("[FromZero] WebGL pre-warming failed:", e);
+    }
+
     webglInitialized = true;
-    console.log("[FromZero] WebGL context successfully initialized");
+    const msg = "[FromZero] WebGL2 context successfully initialized";
+    console.log(msg);
+    invoke("debug_log", { msg: msg }).catch(() => {});
     return true;
   } catch (e) {
-    console.error("[FromZero] Failed to init WebGL context, falling back to 2D canvas:", e);
+    const msg = "[FromZero] Failed to init WebGL2 context: " + e;
+    console.error(msg);
+    invoke("debug_log", { msg: msg }).catch(() => {});
     webglInitialized = false;
     return false;
   }
@@ -503,89 +968,110 @@ async function pumpFrames() {
   const bgCanvas = document.getElementById("bg-canvas");
   if (!bgCanvas) return;
 
-  // Lazily initialize WebGL
   if (!webglInitialized && !initWebGL(bgCanvas)) {
-    // Graceful fallback to 2D Canvas + CPU SVG displacement filter
-    const bgCtx = bgCanvas.getContext("2d");
-    if (!bgCtx) return;
-
-    bgCanvas.style.filter = "url(#liquidGlass) blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92)";
-
-    const startTime = Date.now();
-    try {
-      const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
-      if (res.status === 200) {
-        const w = +res.headers.get("X-Frame-Width");
-        const h = +res.headers.get("X-Frame-Height");
-        const buf = await res.arrayBuffer();
-        if (buf.byteLength === w * h * 4) {
-          if (bgCanvas.width !== w || bgCanvas.height !== h) {
-            bgCanvas.width = w;
-            bgCanvas.height = h;
-          }
-          bgCtx.putImageData(new ImageData(new Uint8ClampedArray(buf), w, h), 0, 0);
-        }
-      }
-    } catch (_) {}
-
-    const targetInterval = Math.round(1000 / activeGlassFps);
-    const elapsed = Date.now() - startTime;
-    const delay = Math.max(0, targetInterval - elapsed);
-    setTimeout(() => {
-      if (pumping) requestAnimationFrame(pumpFrames);
-    }, delay);
+    pumping = false;
     return;
   }
 
-  // GPU path using WebGL
   const startTime = Date.now();
+
   try {
-    const res = await fetch("http://bgframe.localhost/frame", { cache: "no-store" });
+    const res = await fetch(`http://bgframe.localhost/frame?since=${lastRenderedSeq}`, { cache: "no-store" });
     if (res.status === 200) {
+      lastFrameTime = Date.now();
       const seq = +res.headers.get("X-Frame-Seq");
+      const w = +res.headers.get("X-Frame-Width");
+      const h = +res.headers.get("X-Frame-Height");
+      const buf = await res.arrayBuffer();
       if (seq !== lastRenderedSeq) {
         lastRenderedSeq = seq;
-        const w = +res.headers.get("X-Frame-Width");
-        const h = +res.headers.get("X-Frame-Height");
-        const buf = await res.arrayBuffer();
         if (buf.byteLength === w * h * 4) {
           if (bgCanvas.width !== w || bgCanvas.height !== h) {
             bgCanvas.width = w;
             bgCanvas.height = h;
             gl.viewport(0, 0, w, h);
-            
-            // Upload displacement map texture (if first time or size changed)
-            if (displacementCanvas) {
-              gl.bindTexture(gl.TEXTURE_2D, textureDisp);
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, displacementCanvas);
-            }
           }
 
-          // Upload background frame bytes to u_image texture
           gl.bindTexture(gl.TEXTURE_2D, textureImage);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(buf));
 
-          // Render using displacement map shader
           gl.useProgram(glProgram);
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, textureImage);
           gl.uniform1i(imageLocation, 0);
 
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, textureDisp);
-          gl.uniform1i(dispLocation, 1);
+          const scale = w / 720.0;
+          const dpr = window.devicePixelRatio;
+          gl.uniform2f(resolutionLocation, w, h);
+          gl.uniform2f(centerLocation, 360.0 * scale, 265.0 * scale);
+          gl.uniform2f(halfSizeLocation, (320.0 - CORNER) * scale, (225.0 - CORNER) * scale);
+          gl.uniform1f(cornerLocation, CORNER * scale);
 
-          // SVG scale=48 relative displacement warp
-          const scale = 48.0;
-          gl.uniform1f(scaleXLocation, scale / w);
-          gl.uniform1f(scaleYLocation, scale / h);
+          // u_band: bevel border size
+          const dynamicBand = (75.0 + glassSettings.glassBlur * 1.5) * scale;
+          gl.uniform1f(bandLocation, dynamicBand);
+
+          // u_strength: refraction strength
+          const dynamicStrength = (glassSettings.strength) * scale;
+          gl.uniform1f(strengthLocation, dynamicStrength);
+
+          gl.uniform1f(magnifyLocation, 0.015);
+          gl.uniform1f(chromaLocation, glassSettings.chroma);
+
+          // Bind WebGL 2 Premium uniforms
+          gl.uniform1f(squircleNLocation, glassSettings.squircleN);
+          gl.uniform1f(specularLocation, 0.45);
+          gl.uniform1f(frostLocation, glassSettings.frost);
+          gl.uniform1f(beerThicknessLocation, glassSettings.beer);
+          gl.uniform1f(causticStrengthLocation, glassSettings.caustic);
+          gl.uniform1f(dprLocation, dpr);
+
+          // Bind Height Field & Snell Refraction uniforms dynamically based on settings sliders
+          const thicknessVal = glassSettings.beer * 2.5; // Mapped: beer 10~24 -> thickness 25~60
+          const domeHeightVal = glassSettings.caustic * 10.0; // Mapped: caustic 0.4~1.2 -> domeHeight 4~12
+          const iorVal = 1.3 + glassSettings.chroma * 5.0; // Mapped: chroma 0.03~0.05 -> ior 1.45~1.55
+          const bgDistVal = glassSettings.strength * 1.3; // Mapped: strength 0~60 -> bgDist 0~78
+          
+          if (thicknessLocation) gl.uniform1f(thicknessLocation, thicknessVal * scale);
+          if (domeHeightLocation) gl.uniform1f(domeHeightLocation, domeHeightVal * scale);
+          if (iorLocation) gl.uniform1f(iorLocation, iorVal);
+          if (bgDistLocation) gl.uniform1f(bgDistLocation, bgDistVal * scale);
+
+          const isDark = !document.documentElement.hasAttribute('data-theme') ||
+                         document.documentElement.getAttribute('data-theme') === 'dark';
+          const tintOpacity = Math.max(0.01, glassSettings.glassBlur * 0.008 + 0.01);
+          if (isDark) {
+            gl.uniform4f(tintLocation, 18/255, 18/255, 24/255, tintOpacity);
+          } else {
+            gl.uniform4f(tintLocation, 240/255, 240/255, 245/255, tintOpacity);
+          }
+
+          // Convert mouse coordinate relative to centered canvas
+          if (mouseLocation) {
+            const mx = (currentMouseX - 320) * dpr * scale;
+            const my = (currentMouseY - 225) * dpr * scale;
+            gl.uniform2f(mouseLocation, mx, my);
+          }
 
           gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+          if (glassState === "Starting") {
+            glassState = "LiquidGlass";
+            console.log("[FromZero] Handshake: First frame rendered, transitioning to LiquidGlass state");
+            const container = document.getElementById("launcher-container");
+            if (container) {
+              container.classList.remove("blurred");
+              container.classList.add("liquid-glass-active");
+            }
+            try { await invoke("set_blur", { value: 0 }); } catch (_) {}
+          }
         }
       }
+    } else if (res.status === 204) {
+      lastFrameTime = Date.now();
     }
   } catch (err) {
-    console.error("[FromZero] WebGL render error:", err);
+    console.error("[FromZero] WebGL render/fetch error:", err);
   }
 
   const targetInterval = Math.round(1000 / activeGlassFps);
@@ -604,7 +1090,6 @@ async function pumpFrames() {
 window.addEventListener("DOMContentLoaded", async () => {
   try {
     console.log("[FromZero] Initializing...");
-    buildDisplacementMap();
     lastShowTime = Date.now();
 
     try {
@@ -621,6 +1106,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       glassSettings.glassBlur = settings.glass_settings.glass_blur ?? glassSettings.glassBlur;
       glassSettings.borderOpacity = settings.glass_settings.border_opacity ?? glassSettings.borderOpacity;
       glassSettings.glassFps = settings.glass_settings.glass_fps ?? glassSettings.glassFps;
+      glassSettings.strength = settings.glass_settings.strength ?? glassSettings.strength;
+      glassSettings.chroma = settings.glass_settings.chroma ?? glassSettings.chroma;
+      glassSettings.frost = settings.glass_settings.frost ?? glassSettings.frost;
+      glassSettings.beer = settings.glass_settings.beer ?? glassSettings.beer;
+      glassSettings.caustic = settings.glass_settings.caustic ?? glassSettings.caustic;
+      glassSettings.squircleN = settings.glass_settings.squircle_n ?? glassSettings.squircleN;
     }
     applyVisualSettings(glassSettings);
     // Set initial DWM Acrylic state based on glassBlur slider
@@ -643,6 +1134,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     } catch (scanError) {
       console.error("[FromZero] Scan error:", scanError);
       if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 应用扫描失败，请检查日志`;
+    }
+
+    if (listen) {
+      listen("apps-updated", (event) => {
+        const newApps = event.payload;
+        console.log(`[FromZero] Received background apps update: ${newApps.length} apps`);
+        appItems = newApps;
+        if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 已更新 ${appItems.length} 个应用`;
+        renderRecentApps();
+        handleSearch();
+      }).catch((e) => console.error("[FromZero] Failed to listen to apps-updated event:", e));
     }
 
     renderRecentApps();
@@ -1250,7 +1752,13 @@ async function saveSettingsConfig() {
   settings.glass_settings = {
     glass_blur: glassSettings.glassBlur,
     border_opacity: glassSettings.borderOpacity,
-    glass_fps: glassSettings.glassFps
+    glass_fps: glassSettings.glassFps,
+    strength: glassSettings.strength,
+    chroma: glassSettings.chroma,
+    frost: glassSettings.frost,
+    beer: glassSettings.beer,
+    caustic: glassSettings.caustic,
+    squircle_n: glassSettings.squircleN
   };
 
   // Clean backup so closeSettings does not revert them
