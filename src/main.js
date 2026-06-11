@@ -655,19 +655,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       });
       searchInput.addEventListener("compositionend", () => {
         isComposing = false;
-        clearTimeout(searchDebounceTimeout);
-        searchDebounceTimeout = setTimeout(() => {
-          searchDebounceTimeout = null;
-          handleSearch();
-        }, 100);
+        scheduleSearch();
       });
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
-        clearTimeout(searchDebounceTimeout);
-        searchDebounceTimeout = setTimeout(() => {
-          searchDebounceTimeout = null;
-          handleSearch();
-        }, 100);
+        scheduleSearch();
       });
     }
 
@@ -830,21 +822,13 @@ async function handleSearch() {
       try {
         const files = await invoke("search_files", { query: fileQuery, isInline: false });
         if (currentSearchId !== lastSearchId) return;
-        filteredItems = files.slice(0, 20).map(f => ({
-          type: f.is_dir ? "dir" : "file",
-          title: f.name,
-          subtitle: f.path,
-          icon: getFileIcon(f),
-          badge: f.is_dir ? "文件夹" : f.extension.toUpperCase() || "文件",
-          data: f
-        }));
+        filteredItems = files.slice(0, 20).map(mapFileToResultItem);
       } catch (e) {
         console.error("[FromZero] File search error:", e);
         filteredItems = [];
       }
       renderResults();
-      if (filteredItems.length > 0) triggerPreview(filteredItems[0]);
-      else hidePreview();
+      updatePreviewForCurrentSelection();
       return;
     }
   } else if (query.startsWith("\\\\") || query.startsWith("//") || /^[a-zA-Z]:[\\\/]/.test(query) || /^[a-zA-Z]:$/.test(query)) {
@@ -870,14 +854,7 @@ async function handleSearch() {
       const files = await invoke("list_directory", { path: parentDir, searchTerm: searchInDir });
       if (currentSearchId !== lastSearchId) return;
       currentDirPath = parentDir;
-      filteredItems = files.map(f => ({
-        type: f.is_dir ? "dir" : "file",
-        title: f.name === ".." ? ".. (返回上级目录)" : f.name,
-        subtitle: f.path,
-        icon: getFileIcon(f),
-        badge: f.is_dir ? (f.name === ".." ? "返回" : "文件夹") : (f.extension ? f.extension.toUpperCase() : "文件"),
-        data: f
-      }));
+      filteredItems = files.map(mapFileToResultItem);
     } catch (e) {
       console.error("[FromZero] Directory listing error:", e);
       filteredItems = [{
@@ -890,11 +867,7 @@ async function handleSearch() {
       }];
     }
     renderResults();
-    if (filteredItems.length > 0 && (filteredItems[0].type === "file" || filteredItems[0].type === "dir")) {
-      triggerPreview(filteredItems[0]);
-    } else {
-      hidePreview();
-    }
+    updatePreviewForCurrentSelection();
     return;
   } else {
     const match = query.match(/^([a-zA-Z]+)\s+(.+)$/);
@@ -937,14 +910,7 @@ async function handleSearch() {
         }));
 
         // Map files
-        const fileItemsList = fileResults.slice(0, 15).map(f => ({
-          type: f.is_dir ? "dir" : "file",
-          title: f.name,
-          subtitle: f.path,
-          icon: getFileIcon(f),
-          badge: f.is_dir ? (f.name === ".." ? "返回" : "文件夹") : (f.extension ? f.extension.toUpperCase() : "文件"),
-          data: f
-        }));
+        const fileItemsList = fileResults.slice(0, 15).map(mapFileToResultItem);
 
         filteredItems = [...appItemsList, ...fileItemsList];
 
@@ -964,12 +930,7 @@ async function handleSearch() {
         if (currentSearchId === lastSearchId) filteredItems = [];
       }
       renderResults();
-      
-      if (filteredItems.length > 0 && (filteredItems[0].type === "file" || filteredItems[0].type === "dir")) {
-        triggerPreview(filteredItems[0]);
-      } else {
-        hidePreview();
-      }
+      updatePreviewForCurrentSelection();
     }
   }
 }
@@ -1053,16 +1014,12 @@ function updateSelectionVisual() {
       if (i === selectedIndex) {
         items[i].classList.add("selected");
         items[i].scrollIntoView({ block: "nearest" });
-        if (filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir")) {
-          triggerPreview(filteredItems[selectedIndex]);
-        } else {
-          hidePreview();
-        }
       } else {
         items[i].classList.remove("selected");
       }
     }
   }
+  updatePreviewForCurrentSelection();
 }
 
 async function executeItemAction(item) {
@@ -1123,11 +1080,7 @@ async function handleGlobalKeys(e) {
   }
   if (e.key === "ArrowDown") {
     e.preventDefault();
-    if (searchDebounceTimeout) {
-      clearTimeout(searchDebounceTimeout);
-      searchDebounceTimeout = null;
-      await handleSearch();
-    }
+    await flushSearchDebounce();
     if (filteredItems.length > 0) {
       if (selectedIndex < filteredItems.length - 1) {
         selectedIndex++;
@@ -1136,11 +1089,7 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "ArrowUp") {
     e.preventDefault();
-    if (searchDebounceTimeout) {
-      clearTimeout(searchDebounceTimeout);
-      searchDebounceTimeout = null;
-      await handleSearch();
-    }
+    await flushSearchDebounce();
     if (filteredItems.length > 0) {
       if (selectedIndex > 0) {
         selectedIndex--;
@@ -1158,9 +1107,7 @@ async function handleGlobalKeys(e) {
   } else if (e.key === "Enter") {
     e.preventDefault();
     if (searchDebounceTimeout && selectedIndex === 0) {
-      clearTimeout(searchDebounceTimeout);
-      searchDebounceTimeout = null;
-      await handleSearch();
+      await flushSearchDebounce();
     }
     if (e.shiftKey && filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir")) {
       // Open parent directory in Explorer
@@ -1351,6 +1298,64 @@ function recordShortcut(e) {
 }
 
 // =============================================
+// Shared Utilities
+// =============================================
+
+// Convert a base64 data URI to a Blob and create an Object URL
+function base64DataUriToBlob(dataUri, fallbackMime) {
+  const base64Data = dataUri.split(",")[1] || dataUri;
+  const mimeMatch = dataUri.match(/^data:([^;]+);base64,/);
+  const mimeType = mimeMatch ? mimeMatch[1] : fallbackMime;
+  const byteCharacters = atob(base64Data);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  const blob = new Blob([byteArray], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
+
+// Map a backend FileItem to a unified result item for the UI list
+function mapFileToResultItem(f) {
+  return {
+    type: f.is_dir ? "dir" : "file",
+    title: f.name === ".." ? ".. (返回上级目录)" : f.name,
+    subtitle: f.path,
+    icon: getFileIcon(f),
+    badge: f.is_dir ? (f.name === ".." ? "返回" : "文件夹") : (f.extension ? f.extension.toUpperCase() : "文件"),
+    data: f
+  };
+}
+
+// Schedule a debounced search (resets any pending timer)
+function scheduleSearch() {
+  clearTimeout(searchDebounceTimeout);
+  searchDebounceTimeout = setTimeout(() => {
+    searchDebounceTimeout = null;
+    handleSearch();
+  }, 100);
+}
+
+// Flush any pending search debounce timer and execute the search immediately
+async function flushSearchDebounce() {
+  if (searchDebounceTimeout) {
+    clearTimeout(searchDebounceTimeout);
+    searchDebounceTimeout = null;
+    await handleSearch();
+  }
+}
+
+// Determine whether to show or hide file preview based on current selection
+function updatePreviewForCurrentSelection() {
+  if (filteredItems.length > 0 && (filteredItems[selectedIndex] && (filteredItems[selectedIndex].type === "file" || filteredItems[selectedIndex].type === "dir"))) {
+    triggerPreview(filteredItems[selectedIndex]);
+  } else {
+    hidePreview();
+  }
+}
+
+// =============================================
 // File Explorer: Helper Functions
 // =============================================
 
@@ -1436,15 +1441,7 @@ async function showPreview(item) {
       previewContent.appendChild(img);
     } else if (preview.file_type === "pdf" && preview.content) {
       try {
-        const base64Data = preview.content.split(",")[1] || preview.content;
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: 'application/pdf' });
-        const blobUrl = URL.createObjectURL(blob);
+        const blobUrl = base64DataUriToBlob(preview.content, "application/pdf");
 
         const iframe = document.createElement("iframe");
         iframe.src = blobUrl;
@@ -1465,18 +1462,7 @@ async function showPreview(item) {
       }
     } else if (preview.file_type === "audio" && preview.content) {
       try {
-        const base64Data = preview.content.split(",")[1] || preview.content;
-        const mimeMatch = preview.content.match(/^data:([^;]+);base64,/);
-        const mimeType = mimeMatch ? mimeMatch[1] : "audio/ogg";
-
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: mimeType });
-        const blobUrl = URL.createObjectURL(blob);
+        const blobUrl = base64DataUriToBlob(preview.content, "audio/ogg");
 
         const audio = document.createElement("audio");
         audio.src = blobUrl;

@@ -229,6 +229,20 @@ pub fn execute_sys_command(command: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Toggle the main window visibility: hide if visible, show+focus if hidden.
+fn toggle_main_window_visibility(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(visible) = window.is_visible() {
+            if visible {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+    }
+}
+
 pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) -> Result<(), String> {
     use std::str::FromStr;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -242,16 +256,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
     // Register the new shortcut with toggle visibility handler
     match app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
         if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
-            if let Some(window) = app.get_webview_window("main") {
-                if let Ok(visible) = window.is_visible() {
-                    if visible {
-                        let _ = window.hide();
-                    } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-            }
+            toggle_main_window_visibility(app);
         }
     }) {
         Ok(()) => {
@@ -264,16 +269,7 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
             if let Ok(default_shortcut) = Shortcut::from_str("Ctrl+Space") {
                 let _ = app_handle.global_shortcut().on_shortcut(default_shortcut, move |app, _shortcut, event| {
                     if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
-                        if let Some(window) = app.get_webview_window("main") {
-                            if let Ok(visible) = window.is_visible() {
-                                if visible {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                            }
-                        }
+                        toggle_main_window_visibility(app);
                     }
                 });
                 eprintln!("[FromZero] ↻ Restored default Ctrl+Space as fallback");
@@ -342,6 +338,23 @@ fn clean_path_str(path: String) -> String {
     } else {
         path
     }
+}
+
+/// Read a file and encode its contents as a base64 data URI with the given MIME type.
+fn read_file_as_base64_data_uri(path: &std::path::Path, mime: &str) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("无法读取文件: {}", e))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+/// Sort file items: directories first, then alphabetically by name (case-insensitive).
+fn sort_file_items(items: &mut Vec<FileItem>) {
+    items.sort_by(|a, b| {
+        b.is_dir.cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
 }
 
 fn is_hidden_or_system(entry: &std::fs::DirEntry) -> bool {
@@ -450,11 +463,7 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
             }
         }
 
-        // Sort: directories first, then alphabetically
-        items.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        sort_file_items(&mut items);
 
         // Limit to 50 results to prevent UI flooding
         items.truncate(50);
@@ -515,11 +524,7 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
             }
         }
 
-        // Sort: directories first, then by name
-        results.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        sort_file_items(&mut results);
 
         Ok(results)
     }).await.map_err(|e| format!("Search thread failed: {}", e))?
@@ -654,10 +659,6 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let mime = match ext.as_str() {
                 "png" => "image/png",
                 "jpg" | "jpeg" => "image/jpeg",
@@ -668,9 +669,10 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 "svg" => "image/svg+xml",
                 _ => "application/octet-stream",
             };
+            let content = read_file_as_base64_data_uri(&file_path, mime)?;
             Ok(FilePreview {
                 file_type: "image".to_string(),
-                content: format!("data:{};base64,{}", mime, encoded),
+                content,
                 size,
                 modified,
             })
@@ -684,13 +686,10 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let content = read_file_as_base64_data_uri(&file_path, "application/pdf")?;
             Ok(FilePreview {
                 file_type: "pdf".to_string(),
-                content: format!("data:application/pdf;base64,{}", encoded),
+                content,
                 size,
                 modified,
             })
@@ -704,10 +703,6 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let mime = match ext.as_str() {
                 "mp3" => "audio/mpeg",
                 "wav" => "audio/wav",
@@ -717,9 +712,10 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 "m4a" => "audio/mp4",
                 _ => "audio/ogg",
             };
+            let content = read_file_as_base64_data_uri(&file_path, mime)?;
             Ok(FilePreview {
                 file_type: "audio".to_string(),
-                content: format!("data:{};base64,{}", mime, encoded),
+                content,
                 size,
                 modified,
             })
