@@ -160,6 +160,9 @@ pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String
 
 #[tauri::command]
 pub fn open_folder(path: String) -> Result<(), String> {
+    if path.len() > MAX_PATH_LENGTH {
+        return Err("Security Error: Path exceeds maximum allowed length".to_string());
+    }
     // Clean and translate Unix-style folder paths to Windows paths
     let mut resolved = path.replace('/', "\\");
     
@@ -188,6 +191,9 @@ pub fn open_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_search(url: String) -> Result<(), String> {
+    if url.len() > 2048 {
+        return Err("Security Error: URL exceeds maximum allowed length".to_string());
+    }
     // Security restriction: Only allow standard HTTP/HTTPS schemes to prevent protocol handler abuses
     let trimmed = url.trim();
     let lower = trimmed.to_lowercase();
@@ -404,13 +410,76 @@ const IGNORED_DIRS: &[&str] = &[
     ".vs", ".idea", "target", "dist", "build", ".next",
 ];
 
+/// Sensitive directories that should not be listed or previewed to prevent
+/// accidental credential/key exposure through the launcher UI.
+const SENSITIVE_DIRS: &[&str] = &[
+    ".ssh", ".gnupg", ".aws", ".azure", ".kube",
+    "Credentials", "Login Data", "Cookies",
+    ".password-store", ".docker",
+];
+
+/// Sensitive file patterns (by name or extension) blocked from preview.
+const SENSITIVE_FILE_NAMES: &[&str] = &[
+    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+    ".env", ".env.local", ".env.production",
+    "credentials", "credentials.json", "token.json",
+    "master.key", "secrets.yml", "secrets.yaml",
+    ".netrc", ".npmrc", ".pypirc",
+];
+
+/// File extensions that are considered sensitive and blocked from preview.
+const SENSITIVE_EXTENSIONS: &[&str] = &[
+    "pem", "key", "pfx", "p12", "keystore", "jks",
+];
+
+/// Check whether a path component matches a sensitive directory name.
+fn path_contains_sensitive_dir(path: &std::path::Path) -> bool {
+    for component in path.components() {
+        if let std::path::Component::Normal(name) = component {
+            let name_str = name.to_string_lossy();
+            if SENSITIVE_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name_str)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether a file name or extension is considered sensitive.
+fn is_sensitive_file(path: &std::path::Path) -> bool {
+    if let Some(name) = path.file_name() {
+        let name_lower = name.to_string_lossy().to_lowercase();
+        if SENSITIVE_FILE_NAMES.iter().any(|s| s.to_lowercase() == name_lower) {
+            return true;
+        }
+    }
+    if let Some(ext) = path.extension() {
+        let ext_lower = ext.to_string_lossy().to_lowercase();
+        if SENSITIVE_EXTENSIONS.iter().any(|e| *e == ext_lower) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Maximum allowed path length to prevent DoS via excessively long paths.
+const MAX_PATH_LENGTH: usize = 1024;
+
 #[tauri::command]
 pub async fn list_directory(path: String, search_term: String) -> Result<Vec<FileItem>, String> {
+    if path.len() > MAX_PATH_LENGTH {
+        return Err("Security Error: Path exceeds maximum allowed length".to_string());
+    }
     tokio::task::spawn_blocking(move || {
         let dir_path = std::path::PathBuf::from(&path);
         // Canonicalize to resolve .. and symlinks for security
         let dir_path = dir_path.canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
+
+        // Block access to sensitive directories
+        if path_contains_sensitive_dir(&dir_path) {
+            return Err("Security Error: Access to sensitive directories is restricted".to_string());
+        }
         if !dir_path.exists() {
             return Err(format!("路径不存在: {}", path));
         }
@@ -441,6 +510,14 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
         let search_lower = search_term.to_lowercase();
         for entry in entries.flatten() {
             if is_hidden_or_system(&entry) {
+                continue;
+            }
+            // Hide sensitive directories and files from listing
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            if SENSITIVE_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&entry_name)) {
+                continue;
+            }
+            if is_sensitive_file(&entry.path()) {
                 continue;
             }
             if let Some(item) = metadata_to_file_item(&entry) {
@@ -577,6 +654,10 @@ fn search_recursive(
             if IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
                 continue;
             }
+            // Skip sensitive directories
+            if SENSITIVE_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
             // Check if dir name matches
             if name.to_lowercase().contains(query) {
                 if let Some(item) = metadata_to_file_item(&entry) {
@@ -586,6 +667,10 @@ fn search_recursive(
             // Recurse into subdirectory
             search_recursive(&entry.path(), query, results, max_results, max_depth, current_depth + 1);
         } else {
+            // Skip sensitive files from search results
+            if is_sensitive_file(&entry.path()) {
+                continue;
+            }
             // Check if file name matches
             if name.to_lowercase().contains(query) {
                 if let Some(item) = metadata_to_file_item(&entry) {
@@ -598,12 +683,25 @@ fn search_recursive(
 
 #[tauri::command]
 pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
+    if path.len() > MAX_PATH_LENGTH {
+        return Err("Security Error: Path exceeds maximum allowed length".to_string());
+    }
     tokio::task::spawn_blocking(move || {
         let file_path = std::path::PathBuf::from(&path);
         let file_path = file_path.canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
         if !file_path.exists() {
             return Err(format!("文件不存在: {}", path));
+        }
+
+        // Block preview of files inside sensitive directories
+        if path_contains_sensitive_dir(&file_path) {
+            return Err("Security Error: Preview of files in sensitive directories is restricted".to_string());
+        }
+
+        // Block preview of sensitive file types (keys, credentials, env files)
+        if is_sensitive_file(&file_path) {
+            return Err("Security Error: Preview of sensitive files is restricted".to_string());
         }
 
         let metadata = std::fs::metadata(&file_path)
@@ -754,6 +852,9 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
 
 #[tauri::command]
 pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    if path.len() > MAX_PATH_LENGTH {
+        return Err("Security Error: Path exceeds maximum allowed length".to_string());
+    }
     let apps = if let Ok(apps) = state.apps.lock() {
         apps.clone()
     } else {
@@ -763,6 +864,11 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
         let file_path = std::path::PathBuf::from(&path);
         let file_path = file_path.canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
+
+        // Block opening files from sensitive directories
+        if path_contains_sensitive_dir(&file_path) {
+            return Err("Security Error: Opening files from sensitive directories is restricted".to_string());
+        }
         let path_clean = clean_path_str(file_path.to_string_lossy().to_string());
         if !file_path.exists() {
             return Err(format!("文件不存在: {}", path_clean));
