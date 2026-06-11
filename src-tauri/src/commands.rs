@@ -23,7 +23,10 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
     let old_settings = settings::load_settings(&app_handle);
     if old_settings.autostart != settings.autostart {
         eprintln!("[FromZero] Autostart setting changed: {} -> {}", old_settings.autostart, settings.autostart);
-        let _ = settings::apply_autostart_setting(&app_handle, settings.autostart);
+        if let Err(e) = settings::apply_autostart_setting(&app_handle, settings.autostart) {
+            eprintln!("[FromZero] ✗ Failed to apply autostart setting: {}", e);
+            return Err(format!("Failed to apply autostart setting: {}", e));
+        }
     }
     
     // Only re-register the global hotkey if it actually changed
@@ -64,8 +67,15 @@ pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Res
     eprintln!("[FromZero] scan_apps backend returned {} apps", apps.len());
     
     // Update memory cache
-    if let Ok(mut cache) = state.apps.lock() {
-        *cache = apps.clone();
+    match state.apps.lock() {
+        Ok(mut cache) => {
+            *cache = apps.clone();
+        }
+        Err(e) => {
+            eprintln!("[FromZero] ✗ Apps cache mutex poisoned, recovering: {}", e);
+            let mut cache = e.into_inner();
+            *cache = apps.clone();
+        }
     }
     
     // Extract icons asynchronously in background
@@ -145,10 +155,12 @@ pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String
     }
     
     // Security verification: Whitelist execution to only allow files in scanned apps cache
-    let is_whitelisted = if let Ok(apps) = state.apps.lock() {
-        apps.iter().any(|app| app.path == path)
-    } else {
-        false
+    let is_whitelisted = match state.apps.lock() {
+        Ok(apps) => apps.iter().any(|app| app.path == path),
+        Err(e) => {
+            eprintln!("[FromZero] ✗ Apps cache mutex poisoned during launch_app: {}", e);
+            return Err("Internal error: application cache unavailable. Please restart.".to_string());
+        }
     };
     
     if !is_whitelisted {
@@ -237,7 +249,9 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
         .map_err(|e| format!("Invalid shortcut format '{}': {}", shortcut_str, e))?;
 
     // Unregister all existing shortcuts first
-    let _ = app_handle.global_shortcut().unregister_all();
+    if let Err(e) = app_handle.global_shortcut().unregister_all() {
+        eprintln!("[FromZero] ✗ Failed to unregister existing shortcuts: {}", e);
+    }
 
     // Register the new shortcut with toggle visibility handler
     match app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
@@ -754,10 +768,12 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
 
 #[tauri::command]
 pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
-    let apps = if let Ok(apps) = state.apps.lock() {
-        apps.clone()
-    } else {
-        Vec::new()
+    let apps = match state.apps.lock() {
+        Ok(apps) => apps.clone(),
+        Err(e) => {
+            eprintln!("[FromZero] ✗ Apps cache mutex poisoned during open_file: {}", e);
+            return Err("Internal error: application cache unavailable. Please restart.".to_string());
+        }
     };
     tokio::task::spawn_blocking(move || {
         let file_path = std::path::PathBuf::from(&path);
