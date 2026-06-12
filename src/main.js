@@ -68,7 +68,9 @@ let glassSettings = {
   frost: 3.0,
   beer: 15,
   caustic: 0.6,
-  squircleN: 4.5
+  squircleN: 4.5,
+  searchHeight: 46,
+  searchOffset: 10
 };
 let backupGlassSettings = null;
 
@@ -175,7 +177,7 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.2.2";
+const APP_VERSION = "v0.2.3preview";
 
 // =============================================
 // Window Focus/Blur Management & State Machine
@@ -340,6 +342,11 @@ function applyVisualSettings(config) {
   glassSettings.beer = config.beer ?? glassSettings.beer;
   glassSettings.caustic = config.caustic ?? glassSettings.caustic;
   glassSettings.squircleN = config.squircleN ?? glassSettings.squircleN;
+  glassSettings.searchHeight = config.searchHeight ?? glassSettings.searchHeight ?? 46;
+  glassSettings.searchOffset = config.searchOffset ?? glassSettings.searchOffset ?? 10;
+
+  container.style.setProperty("--search-height", `${glassSettings.searchHeight}px`);
+  container.style.setProperty("--search-offset", `${glassSettings.searchOffset}px`);
 
   const b1 = (config.borderOpacity * 0.7).toFixed(3);
   const b2 = (config.borderOpacity * 0.5).toFixed(3);
@@ -368,6 +375,9 @@ function applyVisualSettings(config) {
       try { invoke("set_blur", { value: config.glassBlur }); } catch (e) {}
     }, 60);
   }
+
+  // Dynamically update recent apps list row count based on container height
+  renderRecentApps();
 }
 
 // 300ms debounced invoke to set_capture_fps
@@ -397,7 +407,9 @@ function initSliderListeners() {
     { id: "slider-frost", valId: "val-frost", key: "frost", isFloat: true },
     { id: "slider-beer", valId: "val-beer", key: "beer", isFloat: false },
     { id: "slider-caustic", valId: "val-caustic", key: "caustic", isFloat: true },
-    { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true }
+    { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true },
+    { id: "slider-search-height", valId: "val-search-height", key: "searchHeight", isFloat: false },
+    { id: "slider-search-offset", valId: "val-search-offset", key: "searchOffset", isFloat: false }
   ];
 
   sliders.forEach(s => {
@@ -467,7 +479,9 @@ function readSlidersState() {
     frost: parseFloat(document.getElementById("slider-frost").value),
     beer: parseInt(document.getElementById("slider-beer").value),
     caustic: parseFloat(document.getElementById("slider-caustic").value),
-    squircleN: parseFloat(document.getElementById("slider-squircle-n").value)
+    squircleN: parseFloat(document.getElementById("slider-squircle-n").value),
+    searchHeight: parseInt(document.getElementById("slider-search-height").value),
+    searchOffset: parseInt(document.getElementById("slider-search-offset").value)
   };
 }
 
@@ -482,7 +496,9 @@ function syncSlidersToConfig(config) {
     { id: "slider-frost", valId: "val-frost", val: config.frost, isFloat: true },
     { id: "slider-beer", valId: "val-beer", val: config.beer, isFloat: false },
     { id: "slider-caustic", valId: "val-caustic", val: config.caustic, isFloat: true },
-    { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true }
+    { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true },
+    { id: "slider-search-height", valId: "val-search-height", val: config.searchHeight ?? 46, isFloat: false },
+    { id: "slider-search-offset", valId: "val-search-offset", val: config.searchOffset ?? 10, isFloat: false }
   ];
 
   mappings.forEach(m => {
@@ -1112,6 +1128,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       glassSettings.beer = settings.glass_settings.beer ?? glassSettings.beer;
       glassSettings.caustic = settings.glass_settings.caustic ?? glassSettings.caustic;
       glassSettings.squircleN = settings.glass_settings.squircle_n ?? glassSettings.squircleN;
+      glassSettings.searchHeight = settings.glass_settings.search_height ?? glassSettings.searchHeight;
+      glassSettings.searchOffset = settings.glass_settings.search_offset ?? glassSettings.searchOffset;
     }
     applyVisualSettings(glassSettings);
     // Set initial DWM Acrylic state based on glassBlur slider
@@ -1232,11 +1250,24 @@ window.addEventListener("DOMContentLoaded", async () => {
 function renderRecentApps() {
   if (!recentGrid) return;
   clearChildren(recentGrid);
+
+  // Dynamic row slicing based on left column client height
+  const leftCol = document.getElementById("results-left-col");
+  let maxApps = 8;
+  if (leftCol) {
+    const colHeight = leftCol.clientHeight;
+    // Threshold is 200px. If clientHeight is less than 200px, limit icons to 1 row (4 apps).
+    // Otherwise show 2 rows (8 apps). Always show at least 1 row (4 apps) as the minimum limit.
+    if (colHeight > 0 && colHeight < 200) {
+      maxApps = 4;
+    }
+  }
+
   const recentApps = (settings.recent_apps || [])
     .map(path => appItems.find(app => app.path === path))
     .filter(Boolean)
-    .slice(0, 8);
-  const displayApps = recentApps.length > 0 ? recentApps : appItems.slice(0, 8);
+    .slice(0, maxApps);
+  const displayApps = recentApps.length > 0 ? recentApps : appItems.slice(0, maxApps);
   if (displayApps.length === 0) {
     const emptyDiv = document.createElement("div");
     emptyDiv.className = "recent-empty";
@@ -1758,7 +1789,9 @@ async function saveSettingsConfig() {
     frost: glassSettings.frost,
     beer: glassSettings.beer,
     caustic: glassSettings.caustic,
-    squircle_n: glassSettings.squircleN
+    squircle_n: glassSettings.squircleN,
+    search_height: glassSettings.searchHeight,
+    search_offset: glassSettings.searchOffset
   };
 
   // Clean backup so closeSettings does not revert them

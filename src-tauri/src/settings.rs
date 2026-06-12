@@ -25,6 +25,10 @@ pub struct GlassSettings {
     pub caustic: f64,
     #[serde(default = "default_squircle_n")]
     pub squircle_n: f64,
+    #[serde(default = "default_search_height")]
+    pub search_height: i32,
+    #[serde(default = "default_search_offset")]
+    pub search_offset: i32,
 }
 
 fn default_glass_blur() -> i32 { 8 }
@@ -36,6 +40,8 @@ fn default_frost() -> f64 { 3.0 }
 fn default_beer() -> i32 { 15 }
 fn default_caustic() -> f64 { 0.6 }
 fn default_squircle_n() -> f64 { 4.5 }
+fn default_search_height() -> i32 { 46 }
+fn default_search_offset() -> i32 { 10 }
 
 impl Default for GlassSettings {
     fn default() -> Self {
@@ -49,6 +55,8 @@ impl Default for GlassSettings {
             beer: default_beer(),
             caustic: default_caustic(),
             squircle_n: default_squircle_n(),
+            search_height: default_search_height(),
+            search_offset: default_search_offset(),
         }
     }
 }
