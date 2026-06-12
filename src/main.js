@@ -70,7 +70,8 @@ let glassSettings = {
   caustic: 0.6,
   squircleN: 4.5,
   searchHeight: 46,
-  searchOffset: 10
+  searchOffset: 10,
+  resultsHeight: 280
 };
 let backupGlassSettings = null;
 
@@ -346,9 +347,11 @@ function applyVisualSettings(config) {
   glassSettings.squircleN = config.squircleN ?? glassSettings.squircleN;
   glassSettings.searchHeight = config.searchHeight ?? glassSettings.searchHeight ?? 46;
   glassSettings.searchOffset = config.searchOffset ?? glassSettings.searchOffset ?? 10;
+  glassSettings.resultsHeight = config.resultsHeight ?? glassSettings.resultsHeight ?? 280;
 
   container.style.setProperty("--search-height", `${glassSettings.searchHeight}px`);
   container.style.setProperty("--search-offset", `${glassSettings.searchOffset}px`);
+  container.style.setProperty("--results-height", `${glassSettings.resultsHeight}px`);
 
   const b1 = (config.borderOpacity * 0.7).toFixed(3);
   const b2 = (config.borderOpacity * 0.5).toFixed(3);
@@ -411,7 +414,8 @@ function initSliderListeners() {
     { id: "slider-caustic", valId: "val-caustic", key: "caustic", isFloat: true },
     { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true },
     { id: "slider-search-height", valId: "val-search-height", key: "searchHeight", isFloat: false },
-    { id: "slider-search-offset", valId: "val-search-offset", key: "searchOffset", isFloat: false }
+    { id: "slider-search-offset", valId: "val-search-offset", key: "searchOffset", isFloat: false },
+    { id: "slider-results-height", valId: "val-results-height", key: "resultsHeight", isFloat: false }
   ];
 
   sliders.forEach(s => {
@@ -483,7 +487,8 @@ function readSlidersState() {
     caustic: parseFloat(document.getElementById("slider-caustic").value),
     squircleN: parseFloat(document.getElementById("slider-squircle-n").value),
     searchHeight: parseInt(document.getElementById("slider-search-height").value),
-    searchOffset: parseInt(document.getElementById("slider-search-offset").value)
+    searchOffset: parseInt(document.getElementById("slider-search-offset").value),
+    resultsHeight: parseInt(document.getElementById("slider-results-height").value)
   };
 }
 
@@ -500,7 +505,8 @@ function syncSlidersToConfig(config) {
     { id: "slider-caustic", valId: "val-caustic", val: config.caustic, isFloat: true },
     { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true },
     { id: "slider-search-height", valId: "val-search-height", val: config.searchHeight ?? 46, isFloat: false },
-    { id: "slider-search-offset", valId: "val-search-offset", val: config.searchOffset ?? 10, isFloat: false }
+    { id: "slider-search-offset", valId: "val-search-offset", val: config.searchOffset ?? 10, isFloat: false },
+    { id: "slider-results-height", valId: "val-results-height", val: config.resultsHeight ?? 280, isFloat: false }
   ];
 
   mappings.forEach(m => {
@@ -1132,6 +1138,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       glassSettings.squircleN = settings.glass_settings.squircle_n ?? glassSettings.squircleN;
       glassSettings.searchHeight = settings.glass_settings.search_height ?? glassSettings.searchHeight;
       glassSettings.searchOffset = settings.glass_settings.search_offset ?? glassSettings.searchOffset;
+      glassSettings.resultsHeight = settings.glass_settings.results_height ?? glassSettings.resultsHeight;
     }
     applyVisualSettings(glassSettings);
     // Set initial DWM Acrylic state based on glassBlur slider
@@ -1798,7 +1805,8 @@ async function saveSettingsConfig() {
     caustic: glassSettings.caustic,
     squircle_n: glassSettings.squircleN,
     search_height: glassSettings.searchHeight,
-    search_offset: glassSettings.searchOffset
+    search_offset: glassSettings.searchOffset,
+    results_height: glassSettings.resultsHeight
   };
 
   // Clean backup so closeSettings does not revert them

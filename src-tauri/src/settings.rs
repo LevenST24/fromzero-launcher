@@ -29,6 +29,8 @@ pub struct GlassSettings {
     pub search_height: i32,
     #[serde(default = "default_search_offset")]
     pub search_offset: i32,
+    #[serde(default = "default_results_height")]
+    pub results_height: i32,
 }
 
 fn default_glass_blur() -> i32 { 8 }
@@ -42,6 +44,7 @@ fn default_caustic() -> f64 { 0.6 }
 fn default_squircle_n() -> f64 { 4.5 }
 fn default_search_height() -> i32 { 46 }
 fn default_search_offset() -> i32 { 10 }
+fn default_results_height() -> i32 { 280 }
 
 impl Default for GlassSettings {
     fn default() -> Self {
@@ -57,6 +60,7 @@ impl Default for GlassSettings {
             squircle_n: default_squircle_n(),
             search_height: default_search_height(),
             search_offset: default_search_offset(),
+            results_height: default_results_height(),
         }
     }
 }
