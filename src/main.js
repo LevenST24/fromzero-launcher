@@ -164,8 +164,10 @@ const themeSelect = document.getElementById("theme-select");
 const autostartToggle = document.getElementById("autostart-toggle");
 const tabBtnGeneral = document.getElementById("tab-btn-general");
 const tabBtnGlass = document.getElementById("tab-btn-glass");
+const tabBtnLayout = document.getElementById("tab-btn-layout");
 const panelGeneral = document.getElementById("panel-general");
 const panelGlass = document.getElementById("panel-glass");
+const panelLayout = document.getElementById("panel-layout");
 
 const appWindow = getCurrentWindow();
 
@@ -1200,6 +1202,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     if (tabBtnGeneral) tabBtnGeneral.addEventListener("click", () => switchTab("general"));
     if (tabBtnGlass) tabBtnGlass.addEventListener("click", () => switchTab("glass"));
+    if (tabBtnLayout) tabBtnLayout.addEventListener("click", () => switchTab("layout"));
 
     if (recordBtn) recordBtn.addEventListener("click", toggleRecordingShortcut);
 
@@ -1725,17 +1728,21 @@ function applyTheme(theme) {
 }
 
 function switchTab(tab) {
-  if (tab === "general") {
-    if (tabBtnGeneral) tabBtnGeneral.classList.add("active");
-    if (tabBtnGlass) tabBtnGlass.classList.remove("active");
-    if (panelGeneral) panelGeneral.classList.add("active");
-    if (panelGlass) panelGlass.classList.remove("active");
-  } else if (tab === "glass") {
-    if (tabBtnGeneral) tabBtnGeneral.classList.remove("active");
-    if (tabBtnGlass) tabBtnGlass.classList.add("active");
-    if (panelGeneral) panelGeneral.classList.remove("active");
-    if (panelGlass) panelGlass.classList.add("active");
-  }
+  const tabs = [
+    { name: "general", btn: tabBtnGeneral, panel: panelGeneral },
+    { name: "glass", btn: tabBtnGlass, panel: panelGlass },
+    { name: "layout", btn: tabBtnLayout, panel: panelLayout }
+  ];
+
+  tabs.forEach(t => {
+    if (t.name === tab) {
+      if (t.btn) t.btn.classList.add("active");
+      if (t.panel) t.panel.classList.add("active");
+    } else {
+      if (t.btn) t.btn.classList.remove("active");
+      if (t.panel) t.panel.classList.remove("active");
+    }
+  });
 }
 
 function openSettings() {
