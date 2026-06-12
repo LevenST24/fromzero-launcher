@@ -51,27 +51,67 @@ pub struct GlassSettings {
     pub shadow_spread: f64,
 }
 
-fn default_glass_blur() -> i32 { 8 }
-fn default_border_opacity() -> f64 { 0.60 }
-fn default_glass_fps() -> i32 { 60 }
-fn default_strength() -> i32 { 30 }
-fn default_chroma() -> f64 { 0.045 }
-fn default_frost() -> f64 { 3.0 }
-fn default_beer() -> i32 { 15 }
-fn default_caustic() -> f64 { 0.6 }
-fn default_squircle_n() -> f64 { 4.5 }
-fn default_search_height() -> i32 { 46 }
-fn default_search_offset() -> i32 { 10 }
-fn default_results_height() -> i32 { 280 }
+fn default_glass_blur() -> i32 {
+    8
+}
+fn default_border_opacity() -> f64 {
+    0.60
+}
+fn default_glass_fps() -> i32 {
+    60
+}
+fn default_strength() -> i32 {
+    30
+}
+fn default_chroma() -> f64 {
+    0.045
+}
+fn default_frost() -> f64 {
+    3.0
+}
+fn default_beer() -> i32 {
+    15
+}
+fn default_caustic() -> f64 {
+    0.6
+}
+fn default_squircle_n() -> f64 {
+    4.5
+}
+fn default_search_height() -> i32 {
+    46
+}
+fn default_search_offset() -> i32 {
+    10
+}
+fn default_results_height() -> i32 {
+    280
+}
 
-fn default_edge_hl() -> f64 { 0.50 }
-fn default_specular() -> f64 { 0.50 }
-fn default_fresnel() -> f64 { 1.00 }
-fn default_corner_radius() -> f64 { 32.0 }
-fn default_z_radius() -> f64 { 75.0 }
-fn default_opacity() -> f64 { 1.00 }
-fn default_shadow_opacity() -> f64 { 0.30 }
-fn default_shadow_spread() -> f64 { 16.0 }
+fn default_edge_hl() -> f64 {
+    0.50
+}
+fn default_specular() -> f64 {
+    0.50
+}
+fn default_fresnel() -> f64 {
+    1.00
+}
+fn default_corner_radius() -> f64 {
+    32.0
+}
+fn default_z_radius() -> f64 {
+    75.0
+}
+fn default_opacity() -> f64 {
+    1.00
+}
+fn default_shadow_opacity() -> f64 {
+    0.30
+}
+fn default_shadow_spread() -> f64 {
+    16.0
+}
 
 impl Default for GlassSettings {
     fn default() -> Self {
@@ -130,10 +170,16 @@ fn default_autostart() -> bool {
 
 fn default_web_engines() -> HashMap<String, String> {
     let mut web_engines = HashMap::new();
-    web_engines.insert("g".to_string(), "https://google.com/search?q={}".to_string());
+    web_engines.insert(
+        "g".to_string(),
+        "https://google.com/search?q={}".to_string(),
+    );
     web_engines.insert("b".to_string(), "https://baidu.com/s?wd={}".to_string());
     web_engines.insert("bi".to_string(), "https://bing.com/search?q={}".to_string());
-    web_engines.insert("gh".to_string(), "https://github.com/search?q={}".to_string());
+    web_engines.insert(
+        "gh".to_string(),
+        "https://github.com/search?q={}".to_string(),
+    );
     web_engines
 }
 
@@ -162,7 +208,9 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
     if let Some(path) = get_settings_path(app_handle) {
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(settings) = serde_json::from_str::<Settings>(&content) {
+                if let Ok(mut settings) = serde_json::from_str::<Settings>(&content) {
+                    settings.glass_settings.glass_fps =
+                        settings.glass_settings.glass_fps.clamp(15, 60);
                     return settings;
                 }
             }
@@ -172,9 +220,12 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
 }
 
 #[cfg(target_os = "windows")]
-fn save_settings_win_atomic(from_path: &std::path::Path, to_path: &std::path::Path) -> Result<(), String> {
+fn save_settings_win_atomic(
+    from_path: &std::path::Path,
+    to_path: &std::path::Path,
+) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
-    
+
     extern "system" {
         fn MoveFileExW(
             lpExistingFileName: *const u16,
@@ -183,10 +234,10 @@ fn save_settings_win_atomic(from_path: &std::path::Path, to_path: &std::path::Pa
         ) -> i32;
     }
     const MOVEFILE_REPLACE_EXISTING: u32 = 1;
-    
+
     let from: Vec<u16> = from_path.as_os_str().encode_wide().chain(Some(0)).collect();
     let to: Vec<u16> = to_path.as_os_str().encode_wide().chain(Some(0)).collect();
-    
+
     let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING) };
     if ok == 0 {
         return Err(format!(
@@ -200,16 +251,16 @@ fn save_settings_win_atomic(from_path: &std::path::Path, to_path: &std::path::Pa
 pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), String> {
     use std::fs::File;
     use std::io::Write;
-    
+
     if let Some(path) = get_settings_path(app_handle) {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        
+
         let mut tmp_path = path.clone();
         // Construct filename cleanly to avoid set_extension side-effects
         tmp_path.pop();
         tmp_path.push("settings.json.tmp");
-        
+
         // Write temporary file and sync to disk
         {
             let mut file = File::create(&tmp_path)
@@ -219,7 +270,7 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
             file.sync_all()
                 .map_err(|e| format!("Failed to sync temporary settings file: {}", e))?;
         }
-            
+
         // Perform atomic replacement: MoveFileExW on Windows (NTFS single-step transaction),
         // or std::fs::rename on POSIX systems (which is natively atomic).
         let replace_res = {
@@ -238,7 +289,7 @@ pub fn save_settings(app_handle: &AppHandle, settings: &Settings) -> Result<(), 
         if replace_res.is_err() {
             let _ = fs::remove_file(&tmp_path);
         }
-        
+
         replace_res
     } else {
         Err("Failed to resolve settings path".to_string())

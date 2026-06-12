@@ -1,7 +1,7 @@
 use crate::indexer::{self, AppItem};
 use crate::settings::{self, Settings};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub apps: Mutex<Vec<AppItem>>,
@@ -16,16 +16,23 @@ pub fn get_settings(app_handle: AppHandle, state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
-pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+pub fn update_settings(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<(), String> {
     let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
-    
+
     // Compare old and new autostart setting to prevent writing registry on every launch
     let old_settings = settings::load_settings(&app_handle);
     if old_settings.autostart != settings.autostart {
-        eprintln!("[FromZero] Autostart setting changed: {} -> {}", old_settings.autostart, settings.autostart);
+        eprintln!(
+            "[FromZero] Autostart setting changed: {} -> {}",
+            old_settings.autostart, settings.autostart
+        );
         let _ = settings::apply_autostart_setting(&app_handle, settings.autostart);
     }
-    
+
     // Only re-register the global hotkey if it actually changed
     // Register first, so if it fails, settings are not saved to disk
     if old_settings.shortcut != settings.shortcut {
@@ -33,8 +40,11 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
     }
 
     // Compare and update capture FPS
+    let mut settings = settings;
+    settings.glass_settings.glass_fps = settings.glass_settings.glass_fps.clamp(15, 60);
     if old_settings.glass_settings.glass_fps != settings.glass_settings.glass_fps {
-        crate::capture::CAPTURE_FPS.store(settings.glass_settings.glass_fps as u32, std::sync::atomic::Ordering::Relaxed);
+        let fps_clamped = settings.glass_settings.glass_fps as u32;
+        crate::capture::CAPTURE_FPS.store(fps_clamped, std::sync::atomic::Ordering::Relaxed);
         if crate::capture::is_active() {
             let app_handle_clone = app_handle.clone();
             tokio::spawn(async move {
@@ -44,22 +54,27 @@ pub fn update_settings(app_handle: AppHandle, state: State<'_, AppState>, settin
                         let pad_phys = (40.0 * scale).round() as u32;
                         let _ = tokio::task::spawn_blocking(move || {
                             crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-                        }).await;
+                        })
+                        .await;
                     }
                 }
             });
         }
     }
-    
+
     settings::save_settings(&app_handle, &settings)?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: String) -> Result<Settings, String> {
+pub fn bump_recent_app(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Settings, String> {
     let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
     let mut settings = settings::load_settings(&app_handle);
-    
+
     // Update chronological recent apps list (bump existing app to front)
     let recent_index = settings.recent_apps.iter().position(|p| p == &path);
     if let Some(idx) = recent_index {
@@ -67,36 +82,42 @@ pub fn bump_recent_app(app_handle: AppHandle, state: State<'_, AppState>, path: 
     }
     settings.recent_apps.insert(0, path);
     settings.recent_apps.truncate(16);
-    
+
     settings::save_settings(&app_handle, &settings)?;
     Ok(settings)
 }
 
 #[tauri::command]
-pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Vec<AppItem>, String> {
+pub async fn scan_apps(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<AppItem>, String> {
     eprintln!("[FromZero] scan_apps command invoked");
-    
+
     // Check local JSON cache first to eliminate startup lag
     if let Some(apps) = indexer::load_apps_cache(&app_handle) {
-        eprintln!("[FromZero] scan_apps returning {} apps from local JSON cache", apps.len());
-        
+        eprintln!(
+            "[FromZero] scan_apps returning {} apps from local JSON cache",
+            apps.len()
+        );
+
         // Update memory cache
         if let Ok(mut cache) = state.apps.lock() {
             *cache = apps.clone();
         }
-        
+
         // Extract icons in background for current apps
         indexer::trigger_icon_extraction(app_handle.clone(), apps.clone());
-        
+
         // Spawn asynchronous background scan to refresh the list if anything changed
         let app_handle_bg = app_handle.clone();
         let apps_old = apps.clone();
         tokio::spawn(async move {
             let app_handle_bg_clone = app_handle_bg.clone();
-            let apps_now = tokio::task::spawn_blocking(move || {
-                indexer::scan_start_menu(&app_handle_bg_clone)
-            }).await;
-            
+            let apps_now =
+                tokio::task::spawn_blocking(move || indexer::scan_start_menu(&app_handle_bg_clone))
+                    .await;
+
             if let Ok(new_apps) = apps_now {
                 let mut changed = false;
                 if new_apps.len() != apps_old.len() {
@@ -109,9 +130,12 @@ pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Res
                         }
                     }
                 }
-                
+
                 if changed {
-                    eprintln!("[FromZero] Start menu changed in background. Updating cache with {} apps", new_apps.len());
+                    eprintln!(
+                        "[FromZero] Start menu changed in background. Updating cache with {} apps",
+                        new_apps.len()
+                    );
                     let _ = indexer::save_apps_cache(&app_handle_bg, &new_apps);
                     if let Some(bg_state) = app_handle_bg.try_state::<AppState>() {
                         if let Ok(mut cache) = bg_state.apps.lock() {
@@ -125,33 +149,35 @@ pub async fn scan_apps(app_handle: AppHandle, state: State<'_, AppState>) -> Res
                 }
             }
         });
-        
+
         return Ok(apps);
     }
-    
+
     // Fallback: perform synchronous scan on first run
     eprintln!("[FromZero] No apps cache found, performing synchronous scan on first run");
     let app_handle_clone = app_handle.clone();
-    let apps = tokio::task::spawn_blocking(move || {
-        indexer::scan_start_menu(&app_handle_clone)
-    }).await.map_err(|e| format!("App scan thread failed: {}", e))?;
-    
-    eprintln!("[FromZero] scan_apps synchronous scan returned {} apps", apps.len());
-    
+    let apps = tokio::task::spawn_blocking(move || indexer::scan_start_menu(&app_handle_clone))
+        .await
+        .map_err(|e| format!("App scan thread failed: {}", e))?;
+
+    eprintln!(
+        "[FromZero] scan_apps synchronous scan returned {} apps",
+        apps.len()
+    );
+
     // Save to memory cache
     if let Ok(mut cache) = state.apps.lock() {
         *cache = apps.clone();
     }
-    
+
     // Save to JSON cache
     let _ = indexer::save_apps_cache(&app_handle, &apps);
-    
+
     // Extract icons asynchronously
     indexer::trigger_icon_extraction(app_handle.clone(), apps.clone());
-    
+
     Ok(apps)
 }
-
 
 /// Score an app name against a query string. Returns 0 for no match.
 /// Scoring: perfect=100, prefix=80, contains=60, pinyin_initials_prefix=50,
@@ -221,14 +247,14 @@ pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String
     if !path_buf.exists() {
         return Err(format!("应用文件路径不存在: {}", path));
     }
-    
+
     // Security verification: Whitelist execution to only allow files in scanned apps cache
     let is_whitelisted = if let Ok(apps) = state.apps.lock() {
         apps.iter().any(|app| app.path == path)
     } else {
         false
     };
-    
+
     if !is_whitelisted {
         return Err("Security Error: Target application is not in the whitelist".to_string());
     }
@@ -240,10 +266,10 @@ pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String
 pub fn open_folder(path: String) -> Result<(), String> {
     // Clean and translate Unix-style folder paths to Windows paths
     let mut resolved = path.replace('/', "\\");
-    
+
     // Resolve Windows system drive dynamically instead of hardcoding C:
     let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-    
+
     if resolved == "\\" {
         resolved = format!("{}\\", system_drive);
     } else if resolved.starts_with('\\') && !resolved.starts_with("\\\\") {
@@ -255,7 +281,7 @@ pub fn open_folder(path: String) -> Result<(), String> {
     if !path_buf.exists() {
         return Err(format!("文件夹路径不存在: {}", resolved));
     }
-    
+
     // Security restriction: Force path to be a directory, preventing EXE execution
     if !path_buf.is_dir() {
         return Err("Security Error: The path is not a folder directory".to_string());
@@ -270,34 +296,49 @@ pub fn open_search(url: String) -> Result<(), String> {
     let trimmed = url.trim();
     let lower = trimmed.to_lowercase();
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
-        return Err("Security Error: Only http:// and https:// URL protocol schemas are allowed".to_string());
+        return Err(
+            "Security Error: Only http:// and https:// URL protocol schemas are allowed"
+                .to_string(),
+        );
     }
     open::that(trimmed).map_err(|e| format!("Failed to open search: {}", e))
 }
 
 #[tauri::command]
-pub fn execute_sys_command(command: String) -> Result<(), String> {
+pub fn execute_sys_command(app: AppHandle, command: String) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+    let is_visible = window.is_visible().map_err(|e| e.to_string())?;
+    if !is_visible {
+        return Err("安全限制: 窗口不可见时无法执行系统命令。".to_string());
+    }
+
+    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let rundll_path = format!("{}\\{}", sys_root, "System32\\rundll32.exe");
+    let shutdown_path = format!("{}\\{}", sys_root, "System32\\shutdown.exe");
+
     match command.as_str() {
         "lock" => {
-            std::process::Command::new("rundll32.exe")
+            std::process::Command::new(rundll_path)
                 .args(["user32.dll,LockWorkStation"])
                 .spawn()
                 .map_err(|e| e.to_string())?;
         }
         "sleep" => {
-            std::process::Command::new("rundll32.exe")
+            std::process::Command::new(rundll_path)
                 .args(["powrprof.dll,SetSuspendState", "0,1,0"])
                 .spawn()
                 .map_err(|e| e.to_string())?;
         }
         "shutdown" => {
-            std::process::Command::new("shutdown")
+            std::process::Command::new(shutdown_path)
                 .args(["/s", "/t", "0"])
                 .spawn()
                 .map_err(|e| e.to_string())?;
         }
         "restart" => {
-            std::process::Command::new("shutdown")
+            std::process::Command::new(shutdown_path)
                 .args(["/r", "/t", "0"])
                 .spawn()
                 .map_err(|e| e.to_string())?;
@@ -320,15 +361,20 @@ fn toggle_window_visibility(window: &tauri::WebviewWindow) {
             if let Ok(hwnd) = window.hwnd() {
                 use std::ffi::c_void;
                 unsafe {
-                    type SetForegroundWindowFn = unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
+                    type SetForegroundWindowFn =
+                        unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
                     if let Ok(user32_name) = std::ffi::CString::new("user32.dll") {
                         let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
                         if !user32.is_null() {
                             if let Ok(func_name) = std::ffi::CString::new("SetForegroundWindow") {
-                                let proc_addr = winapi::um::libloaderapi::GetProcAddress(user32, func_name.as_ptr());
+                                let proc_addr = winapi::um::libloaderapi::GetProcAddress(
+                                    user32,
+                                    func_name.as_ptr(),
+                                );
                                 if !proc_addr.is_null() {
-                                    let set_fg: SetForegroundWindowFn = std::mem::transmute(proc_addr);
-                                    set_fg(hwnd.0 as *mut c_void);
+                                    let set_fg: SetForegroundWindowFn =
+                                        std::mem::transmute(proc_addr);
+                                    set_fg(hwnd.0);
                                 }
                             }
                             winapi::um::libloaderapi::FreeLibrary(user32);
@@ -340,7 +386,10 @@ fn toggle_window_visibility(window: &tauri::WebviewWindow) {
     }
 }
 
-pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) -> Result<(), String> {
+pub fn register_shortcut_internal(
+    app_handle: &AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
     use std::str::FromStr;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
@@ -351,28 +400,39 @@ pub fn register_shortcut_internal(app_handle: &AppHandle, shortcut_str: &str) ->
     let _ = app_handle.global_shortcut().unregister_all();
 
     // Register the new shortcut with toggle visibility handler
-    match app_handle.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, event| {
-        if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
-            if let Some(window) = app.get_webview_window("main") {
-                toggle_window_visibility(&window);
+    match app_handle
+        .global_shortcut()
+        .on_shortcut(shortcut, move |app, _shortcut, event| {
+            if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
+                if let Some(window) = app.get_webview_window("main") {
+                    toggle_window_visibility(&window);
+                }
             }
-        }
-    }) {
+        }) {
         Ok(()) => {
-            eprintln!("[FromZero] ✓ Shortcut '{}' registered successfully", shortcut_str);
+            eprintln!(
+                "[FromZero] ✓ Shortcut '{}' registered successfully",
+                shortcut_str
+            );
             Ok(())
         }
         Err(e) => {
             // Registration failed — try to restore the default shortcut as fallback
-            eprintln!("[FromZero] ✗ Failed to register shortcut '{}': {}", shortcut_str, e);
+            eprintln!(
+                "[FromZero] ✗ Failed to register shortcut '{}': {}",
+                shortcut_str, e
+            );
             if let Ok(default_shortcut) = Shortcut::from_str("Ctrl+Space") {
-                let _ = app_handle.global_shortcut().on_shortcut(default_shortcut, move |app, _shortcut, event| {
-                    if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
-                        if let Some(window) = app.get_webview_window("main") {
-                            toggle_window_visibility(&window);
+                let _ = app_handle.global_shortcut().on_shortcut(
+                    default_shortcut,
+                    move |app, _shortcut, event| {
+                        if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
+                            if let Some(window) = app.get_webview_window("main") {
+                                toggle_window_visibility(&window);
+                            }
                         }
-                    }
-                });
+                    },
+                );
                 eprintln!("[FromZero] ↻ Restored default Ctrl+Space as fallback");
             }
             Err(format!("快捷键 '{}' 注册失败: {}", shortcut_str, e))
@@ -392,7 +452,6 @@ pub fn debug_log(_msg: String) {
 #[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
-    use std::ffi::c_void;
     const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
     const DWMSBT_NONE: u32 = 1;
     const DWMSBT_TRANSIENTWINDOW: u32 = 3;
@@ -403,16 +462,25 @@ pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
 
     let window = app.get_webview_window("main").ok_or("Window not found")?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let raw_hwnd = hwnd.0 as *mut c_void;
-    
-    let backdrop_type = if value > 0 { DWMSBT_TRANSIENTWINDOW } else { DWMSBT_NONE };
+    let raw_hwnd = hwnd.0;
+
+    let backdrop_type = if value > 0 {
+        DWMSBT_TRANSIENTWINDOW
+    } else {
+        DWMSBT_NONE
+    };
     crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop_type)?;
-    
+
     // Toggle corner rounding dynamically to eliminate sharp corner ghosting on startup/acrylic states
-    let corner_pref = if value > 0 { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
+    let corner_pref = if value > 0 {
+        DWMWCP_ROUND
+    } else {
+        DWMWCP_DONOTROUND
+    };
     crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, corner_pref)?;
-    
-    eprintln!("[FromZero] DWM Acrylic {}, corner rounding set to {}", 
+
+    eprintln!(
+        "[FromZero] DWM Acrylic {}, corner rounding set to {}",
         if value > 0 { "enabled" } else { "disabled" },
         if value > 0 { "ROUND" } else { "DONOTROUND" }
     );
@@ -447,9 +515,24 @@ pub struct FilePreview {
     pub modified: u64,
 }
 
+fn is_safe_path(path: &std::path::Path) -> bool {
+    if let Some(path_str) = path.to_str() {
+        let normalized = path_str.replace('/', "\\");
+        if normalized.starts_with(r"\\") {
+            if normalized.starts_with(r"\\?\UNC\") {
+                return false;
+            }
+            if !normalized.starts_with(r"\\?\") && !normalized.starts_with(r"\\.\") {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn clean_path_str(path: String) -> String {
-    if path.starts_with(r"\\?\") {
-        path[4..].to_string()
+    if let Some(stripped) = path.strip_prefix(r"\\?\") {
+        stripped.to_string()
     } else {
         path
     }
@@ -497,30 +580,57 @@ fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
     let extension = if is_dir {
         String::new()
     } else {
-        entry.path().extension()
+        entry
+            .path()
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default()
     };
-    let modified = metadata.modified().ok()
+    let modified = metadata
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Some(FileItem { name, path, is_dir, size, extension, modified })
+    Some(FileItem {
+        name,
+        path,
+        is_dir,
+        size,
+        extension,
+        modified,
+    })
 }
 
 /// Directories to skip during recursive file search
 const IGNORED_DIRS: &[&str] = &[
-    "node_modules", ".git", ".svn", ".hg", "__pycache__", ".cache",
-    "AppData", "$Recycle.Bin", "System Volume Information",
-    ".vs", ".idea", "target", "dist", "build", ".next",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    "__pycache__",
+    ".cache",
+    "AppData",
+    "$Recycle.Bin",
+    "System Volume Information",
+    ".vs",
+    ".idea",
+    "target",
+    "dist",
+    "build",
+    ".next",
 ];
 
 #[tauri::command]
 pub async fn list_directory(path: String, search_term: String) -> Result<Vec<FileItem>, String> {
     tokio::task::spawn_blocking(move || {
         let dir_path = std::path::PathBuf::from(&path);
+        if !is_safe_path(&dir_path) {
+            return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
+        }
         // Canonicalize to resolve .. and symlinks for security
-        let dir_path = dir_path.canonicalize()
+        let dir_path = dir_path
+            .canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
         if !dir_path.exists() {
             return Err(format!("路径不存在: {}", path));
@@ -546,8 +656,8 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
                 });
             }
         }
-        let entries = std::fs::read_dir(&dir_path)
-            .map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
+        let entries =
+            std::fs::read_dir(&dir_path).map_err(|e| format!("无法读取目录 {}: {}", path, e))?;
 
         let search_lower = search_term.to_lowercase();
         for entry in entries.flatten() {
@@ -563,14 +673,17 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
 
         // Sort: directories first, then alphabetically
         items.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir)
+            b.is_dir
+                .cmp(&a.is_dir)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
 
         // Limit to 50 results to prevent UI flooding
         items.truncate(50);
         Ok(items)
-    }).await.map_err(|e| format!("Directory listing thread failed: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Directory listing thread failed: {}", e))?
 }
 
 #[tauri::command]
@@ -582,9 +695,9 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
             return Ok(Vec::new());
         }
 
-        let user_profile = std::env::var("USERPROFILE")
-            .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
-        
+        let user_profile =
+            std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+
         let mut search_roots = vec![
             format!("{}\\Desktop", user_profile),
             format!("{}\\Documents", user_profile),
@@ -619,7 +732,14 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
         for root in &search_roots {
             let root_path = std::path::PathBuf::from(root);
             if root_path.exists() && root_path.is_dir() {
-                search_recursive(&root_path, &query_lower, &mut results, max_results, max_depth, 0);
+                search_recursive(
+                    &root_path,
+                    &query_lower,
+                    &mut results,
+                    max_results,
+                    max_depth,
+                    0,
+                );
             }
             if results.len() >= max_results {
                 break;
@@ -628,12 +748,15 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
 
         // Sort: directories first, then by name
         results.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir)
+            b.is_dir
+                .cmp(&a.is_dir)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
 
         Ok(results)
-    }).await.map_err(|e| format!("Search thread failed: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Search thread failed: {}", e))?
 }
 
 fn search_recursive(
@@ -695,7 +818,14 @@ fn search_recursive(
                 }
             }
             // Recurse into subdirectory
-            search_recursive(&entry.path(), query, results, max_results, max_depth, current_depth + 1);
+            search_recursive(
+                &entry.path(),
+                query,
+                results,
+                max_results,
+                max_depth,
+                current_depth + 1,
+            );
         } else {
             // Check if file name matches
             if name.to_lowercase().contains(query) {
@@ -711,16 +841,22 @@ fn search_recursive(
 pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
     tokio::task::spawn_blocking(move || {
         let file_path = std::path::PathBuf::from(&path);
-        let file_path = file_path.canonicalize()
+        if !is_safe_path(&file_path) {
+            return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
+        }
+        let file_path = file_path
+            .canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
         if !file_path.exists() {
             return Err(format!("文件不存在: {}", path));
         }
 
-        let metadata = std::fs::metadata(&file_path)
-            .map_err(|e| format!("无法读取元数据: {}", e))?;
+        let metadata =
+            std::fs::metadata(&file_path).map_err(|e| format!("无法读取元数据: {}", e))?;
         let size = metadata.len();
-        let modified = metadata.modified().ok()
+        let modified = metadata
+            .modified()
+            .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
@@ -743,16 +879,17 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
             });
         }
 
-        let ext = file_path.extension()
+        let ext = file_path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
         let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
         let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
         let text_exts = [
-            "txt", "md", "json", "js", "ts", "rs", "css", "html", "py", "sh", "bat",
-            "toml", "yaml", "yml", "ini", "log", "conf", "cfg", "xml", "csv",
-            "c", "cpp", "h", "hpp", "java", "go", "rb", "php", "sql", "r",
+            "txt", "md", "json", "js", "ts", "rs", "css", "html", "py", "sh", "bat", "toml",
+            "yaml", "yml", "ini", "log", "conf", "cfg", "xml", "csv", "c", "cpp", "h", "hpp",
+            "java", "go", "rb", "php", "sql", "r",
         ];
 
         if image_exts.contains(&ext.as_str()) {
@@ -765,8 +902,7 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
+            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let mime = match ext.as_str() {
@@ -795,8 +931,7 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
+            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             Ok(FilePreview {
@@ -815,8 +950,7 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
+            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let mime = match ext.as_str() {
@@ -837,11 +971,12 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
         } else if text_exts.contains(&ext.as_str()) {
             // Text preview: read at most 64KB to prevent OOM
             use std::io::Read;
-            let file = std::fs::File::open(&file_path)
-                .map_err(|e| format!("无法打开文件: {}", e))?;
+            let file =
+                std::fs::File::open(&file_path).map_err(|e| format!("无法打开文件: {}", e))?;
             let mut handle = file.take(64 * 1024);
             let mut buffer = Vec::new();
-            handle.read_to_end(&mut buffer)
+            handle
+                .read_to_end(&mut buffer)
                 .map_err(|e| format!("无法读取文件: {}", e))?;
             let text = String::from_utf8_lossy(&buffer);
             let preview: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
@@ -860,7 +995,9 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 modified,
             })
         }
-    }).await.map_err(|e| format!("Preview thread failed: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Preview thread failed: {}", e))?
 }
 
 #[tauri::command]
@@ -872,7 +1009,11 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
     };
     tokio::task::spawn_blocking(move || {
         let file_path = std::path::PathBuf::from(&path);
-        let file_path = file_path.canonicalize()
+        if !is_safe_path(&file_path) {
+            return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
+        }
+        let file_path = file_path
+            .canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
         let path_clean = clean_path_str(file_path.to_string_lossy().to_string());
         if !file_path.exists() {
@@ -880,67 +1021,94 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
         }
 
         // Security: block direct execution of script/executable files
-        let ext = file_path.extension()
+        let ext = file_path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let dangerous_exts = ["exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif"];
+        let dangerous_exts = [
+            "exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif", "lnk", "url",
+            "hta", "js", "jse", "msc", "cpl", "reg", "jar",
+        ];
         if dangerous_exts.contains(&ext.as_str()) {
             // Allow only if the file is in the scanned apps whitelist (either as shortcut or target executable)
             let is_whitelisted = apps.iter().any(|app| {
-                let clean_p = if let Ok(p_path) = std::path::PathBuf::from(&app.path).canonicalize() {
+                let clean_p = if let Ok(p_path) = std::path::PathBuf::from(&app.path).canonicalize()
+                {
                     clean_path_str(p_path.to_string_lossy().to_string())
                 } else {
                     clean_path_str(app.path.clone())
                 };
 
-                let clean_t = if let Ok(t_path) = std::path::PathBuf::from(&app.target).canonicalize() {
-                    clean_path_str(t_path.to_string_lossy().to_string())
-                } else {
-                    clean_path_str(app.target.clone())
-                };
+                let clean_t =
+                    if let Ok(t_path) = std::path::PathBuf::from(&app.target).canonicalize() {
+                        clean_path_str(t_path.to_string_lossy().to_string())
+                    } else {
+                        clean_path_str(app.target.clone())
+                    };
 
-                clean_p.eq_ignore_ascii_case(&path_clean) || clean_t.eq_ignore_ascii_case(&path_clean)
+                clean_p.eq_ignore_ascii_case(&path_clean)
+                    || clean_t.eq_ignore_ascii_case(&path_clean)
             });
             if !is_whitelisted {
-                return Err(format!("安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。", ext));
+                return Err(format!(
+                    "安全限制: 不允许直接执行 .{} 文件。请通过应用搜索启动。",
+                    ext
+                ));
             }
         }
 
         open::that(&path_clean).map_err(|e| format!("无法打开文件: {}", e))
-    }).await.map_err(|e| format!("Open thread failed: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Open thread failed: {}", e))?
 }
 
 #[tauri::command]
 pub async fn start_bg_capture(app: AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("main").ok_or("Main window not found")?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+    let is_visible = window.is_visible().map_err(|e| e.to_string())?;
+    if !is_visible {
+        return Err("安全限制: 窗口不可见时无法启动后台捕获。".to_string());
+    }
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let pad_phys = (40.0 * scale).round() as u32; // 40 CSS px padding
     tokio::task::spawn_blocking(move || {
         crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn stop_bg_capture() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
         crate::capture::stop();
-    }).await.map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn set_capture_fps(app: AppHandle, fps: u32) -> Result<(), String> {
-    crate::capture::CAPTURE_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+    let fps_clamped = fps.clamp(15, 60);
+    crate::capture::CAPTURE_FPS.store(fps_clamped, std::sync::atomic::Ordering::Relaxed);
     if crate::capture::is_active() {
-        let window = app.get_webview_window("main").ok_or("Main window not found")?;
+        let window = app
+            .get_webview_window("main")
+            .ok_or("Main window not found")?;
         let pos = window.outer_position().map_err(|e| e.to_string())?;
         let size = window.outer_size().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0);
         let pad_phys = (40.0 * scale).round() as u32;
         tokio::task::spawn_blocking(move || {
             crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-        }).await.map_err(|e| e.to_string())??;
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     }
     Ok(())
 }

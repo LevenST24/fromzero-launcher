@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     frame::Frame,
@@ -24,13 +24,18 @@ pub static LATEST_FRAME: Mutex<Option<FrameData>> = Mutex::new(None);
 // Crop region: x0, y0, x1, y1 (in physical pixels relative to primary monitor)
 pub static CROP: Mutex<(u32, u32, u32, u32)> = Mutex::new((0, 0, 1, 1));
 // Global frame sequence counter
+type CaptureCtrl = windows_capture::capture::CaptureControl<
+    CaptureHandler,
+    Box<dyn std::error::Error + Send + Sync>,
+>;
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 // Capture session control handle
-static CONTROL: OnceLock<Mutex<Option<windows_capture::capture::CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>>> = OnceLock::new();
+static CONTROL: OnceLock<Mutex<Option<CaptureCtrl>>> = OnceLock::new();
 // Global target capture FPS
 pub static CAPTURE_FPS: AtomicU32 = AtomicU32::new(60);
 
-fn control_slot() -> &'static Mutex<Option<windows_capture::capture::CaptureControl<CaptureHandler, Box<dyn std::error::Error + Send + Sync>>>> {
+fn control_slot() -> &'static Mutex<Option<CaptureCtrl>> {
     CONTROL.get_or_init(|| Mutex::new(None))
 }
 
@@ -53,10 +58,10 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Crop the frame buffer to match the window bounds on screen
         let mut cropped = frame.buffer_crop(x0, y0, x1, y1)?;
         let bytes = cropped.as_nopadding_buffer()?;
-        
+
         let src_w = x1 - x0;
         let src_h = y1 - y0;
-        
+
         // Full physical resolution capture for high clarity
         let dst_w = src_w;
         let dst_h = src_h;
@@ -135,4 +140,3 @@ pub fn stop() {
     }
     *LATEST_FRAME.lock().unwrap() = None;
 }
-

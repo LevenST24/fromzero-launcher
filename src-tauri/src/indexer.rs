@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::thread;
-use tauri::{AppHandle, Emitter};
 use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppItem {
@@ -58,14 +58,16 @@ pub fn load_apps_cache(app_handle: &AppHandle) -> Option<Vec<AppItem>> {
 }
 
 pub fn save_apps_cache(app_handle: &AppHandle, apps: &[AppItem]) -> Result<(), String> {
-    let cache_dir = app_handle.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let cache_dir = app_handle
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?;
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     let cache_path = cache_dir.join("apps_cache.json");
     let content = serde_json::to_string(apps).map_err(|e| e.to_string())?;
     fs::write(&cache_path, content).map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     let mut apps = Vec::new();
@@ -111,8 +113,19 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
 
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_command]);
+    let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let powershell_path = format!(
+        "{}\\{}",
+        sys_root, "System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    );
+    let mut cmd = std::process::Command::new(powershell_path);
+    cmd.args([
+        "-NoProfile",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        ps_command,
+    ]);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
@@ -127,7 +140,10 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 out.stderr.len()
             );
             if !out.status.success() || !out.stderr.is_empty() {
-                eprintln!("[FromZero] Stderr content: {}", String::from_utf8_lossy(&out.stderr));
+                eprintln!(
+                    "[FromZero] Stderr content: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
         }
         Err(e) => {
@@ -138,12 +154,15 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
     if let Ok(out) = output {
         let json_str = String::from_utf8_lossy(&out.stdout);
         let trimmed = json_str.trim();
-        
-        eprintln!("[FromZero] PowerShell output trimmed length: {}", trimmed.len());
+
+        eprintln!(
+            "[FromZero] PowerShell output trimmed length: {}",
+            trimmed.len()
+        );
         if trimmed.is_empty() || trimmed == "[]" {
             eprintln!("[FromZero] PowerShell output is empty or '[]'");
         }
-        
+
         if !trimmed.is_empty() && trimmed != "[]" {
             // PowerShell might output a single object or an array. We handle both by attempting to parse as array first
             let raw_items: Vec<RawAppItem> = if trimmed.starts_with('[') {
@@ -164,7 +183,10 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
                 }
             };
 
-            eprintln!("[FromZero] Parsed {} raw items from start menu JSON", raw_items.len());
+            eprintln!(
+                "[FromZero] Parsed {} raw items from start menu JSON",
+                raw_items.len()
+            );
 
             let cache_dir = match app_handle.path().app_cache_dir() {
                 Ok(dir) => dir,
@@ -178,20 +200,24 @@ pub fn scan_start_menu(app_handle: &AppHandle) -> Vec<AppItem> {
 
             for item in raw_items {
                 let name_lower = item.name.to_lowercase();
-                
+
                 // Skip uninstallers, help files, or empty entries
-                if name_lower.contains("uninstall") 
-                    || name_lower.contains("卸载") 
-                    || name_lower.contains("help") 
-                    || name_lower.contains("帮助") 
-                    || item.name.trim().is_empty() 
+                if name_lower.contains("uninstall")
+                    || name_lower.contains("卸载")
+                    || name_lower.contains("help")
+                    || name_lower.contains("帮助")
+                    || item.name.trim().is_empty()
                 {
                     continue;
                 }
 
                 // Dedup by (target, arguments) so PWA shortcuts with different
                 // --app-id arguments are kept even when they share the same browser executable
-                let dedup_key = format!("{}|{}", item.target.to_lowercase(), item.arguments.to_lowercase());
+                let dedup_key = format!(
+                    "{}|{}",
+                    item.target.to_lowercase(),
+                    item.arguments.to_lowercase()
+                );
                 if seen_target_args.contains(&dedup_key) {
                     continue;
                 }
@@ -268,7 +294,10 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
         let cache_dir = match app_handle.path().app_cache_dir() {
             Ok(dir) => dir,
             Err(e) => {
-                eprintln!("[FromZero] Failed to resolve cache directory for icon extraction: {}", e);
+                eprintln!(
+                    "[FromZero] Failed to resolve cache directory for icon extraction: {}",
+                    e
+                );
                 return;
             }
         };
@@ -280,18 +309,25 @@ pub fn trigger_icon_extraction(app_handle: AppHandle, apps: Vec<AppItem>) {
             .unwrap_or_default()
             .as_nanos();
         let thread_id = format!("{:?}", thread::current().id());
-        let sanitized_thread_id: String = thread_id.chars().filter(|c| c.is_alphanumeric()).collect();
-        let temp_json_path = cache_dir.join(format!("icon_targets_{}_{}.json", now, sanitized_thread_id));
-        
+        let sanitized_thread_id: String =
+            thread_id.chars().filter(|c| c.is_alphanumeric()).collect();
+        let temp_json_path =
+            cache_dir.join(format!("icon_targets_{}_{}.json", now, sanitized_thread_id));
+
         if let Ok(json_content) = serde_json::to_string(&items_to_extract) {
             if fs::write(&temp_json_path, json_content).is_ok() {
                 #[cfg(target_os = "windows")]
                 use std::os::windows::process::CommandExt;
 
-                let mut cmd = std::process::Command::new("powershell");
+                let sys_root =
+                    std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+                let powershell_path = format!(
+                    "{}\\{}",
+                    sys_root, "System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+                );
+                let mut cmd = std::process::Command::new(powershell_path);
                 cmd.args([
                     "-NoProfile",
-                    "-ExecutionPolicy", "Bypass",
                     "-WindowStyle", "Hidden",
                     "-Command",
                     r#"Add-Type -AssemblyName System.Drawing; Add-Type -TypeDefinition @"
@@ -310,7 +346,9 @@ public class IconExtractor {
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-                if let Ok(output) = run_command_with_timeout(cmd, std::time::Duration::from_secs(15)) {
+                if let Ok(output) =
+                    run_command_with_timeout(cmd, std::time::Duration::from_secs(15))
+                {
                     let out_str = String::from_utf8_lossy(&output.stdout);
                     for line in out_str.lines() {
                         let trimmed = line.trim();
@@ -356,7 +394,10 @@ fn run_command_with_timeout(
             #[cfg(target_os = "windows")]
             {
                 use std::os::windows::process::CommandExt;
-                let mut kill_cmd = std::process::Command::new("taskkill");
+                let sys_root =
+                    std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+                let taskkill_path = format!("{}\\{}", sys_root, "System32\\taskkill.exe");
+                let mut kill_cmd = std::process::Command::new(taskkill_path);
                 kill_cmd.args(["/F", "/PID", &child_id.to_string()]);
                 kill_cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
                 let _ = kill_cmd.status();

@@ -30,7 +30,7 @@ if (window.__TAURI__) {
     hide: async () => console.log("[Mock Window] hide"),
     show: async () => console.log("[Mock Window] show"),
     setFocus: async () => console.log("[Mock Window] setFocus"),
-    listen: (event, callback) => {
+    listen: async (event, callback) => {
       console.log(`[Mock Window] listen for ${event}`);
       return () => {};
     }
@@ -1301,7 +1301,7 @@ async function handleSearch() {
     return;
   }
   if (welcomeScreen) welcomeScreen.style.display = "none";
-  if (resultsList) resultsList.style.display = "block";
+  if (resultsList) resultsList.style.display = "flex";
   if (query.startsWith(">")) {
     if (searchIndicator) searchIndicator.textContent = "⚡";
     const subQuery = query.slice(1).trim().toLowerCase();
@@ -1609,6 +1609,9 @@ async function executeItemAction(item) {
 }
 
 async function handleGlobalKeys(e) {
+  if (isComposing || e.isComposing) {
+    return;
+  }
   // Shortcut recording is handled by a dedicated document-level keydown listener
   if (settingsOverlay && settingsOverlay.classList.contains("active")) {
     if (e.key === "Escape") closeSettings();
@@ -1650,7 +1653,7 @@ async function handleGlobalKeys(e) {
     }
   } else if (e.key === "Enter") {
     e.preventDefault();
-    if (searchDebounceTimeout && selectedIndex === 0) {
+    if (searchDebounceTimeout) {
       clearTimeout(searchDebounceTimeout);
       searchDebounceTimeout = null;
       await handleSearch();
@@ -1735,47 +1738,45 @@ function closeSettings() {
 }
 
 async function saveSettingsConfig() {
-  if (themeSelect) settings.theme = themeSelect.value;
-  settings.shortcut = currentShortcut;
-  if (autostartToggle) settings.autostart = autostartToggle.checked;
-  applyTheme(settings.theme);
+  const nextSettings = JSON.parse(JSON.stringify(settings));
+  if (themeSelect) nextSettings.theme = themeSelect.value;
+  nextSettings.shortcut = currentShortcut;
+  if (autostartToggle) nextSettings.autostart = autostartToggle.checked;
 
-  // Commit glass settings
-  glassSettings = readSlidersState();
-
-  // Glass settings are saved as part of the unified settings object
-  settings.glass_settings = {
-    glass_blur: glassSettings.glassBlur,
-    glass_fps: glassSettings.glassFps,
-    strength: glassSettings.strength,
-    edge_hl: glassSettings.edgeHl,
-    specular: glassSettings.specular,
-    fresnel: glassSettings.fresnel,
-    corner_radius: glassSettings.cornerRadius,
-    z_radius: glassSettings.zRadius,
-    opacity: glassSettings.opacity,
-    shadow_opacity: glassSettings.shadowOpacity,
-    shadow_spread: glassSettings.shadowSpread,
-    squircle_n: glassSettings.squircleN,
-    search_height: glassSettings.searchHeight,
-    search_offset: glassSettings.searchOffset,
-    results_height: glassSettings.resultsHeight,
+  const nextGlassSettings = readSlidersState();
+  nextSettings.glass_settings = {
+    glass_blur: nextGlassSettings.glassBlur,
+    glass_fps: nextGlassSettings.glassFps,
+    strength: nextGlassSettings.strength,
+    edge_hl: nextGlassSettings.edgeHl,
+    specular: nextGlassSettings.specular,
+    fresnel: nextGlassSettings.fresnel,
+    corner_radius: nextGlassSettings.cornerRadius,
+    z_radius: nextGlassSettings.zRadius,
+    opacity: nextGlassSettings.opacity,
+    shadow_opacity: nextGlassSettings.shadowOpacity,
+    shadow_spread: nextGlassSettings.shadowSpread,
+    squircle_n: nextGlassSettings.squircleN,
+    search_height: nextGlassSettings.searchHeight,
+    search_offset: nextGlassSettings.searchOffset,
+    results_height: nextGlassSettings.resultsHeight,
     
     // Maintain deprecated fields for backward compatibility
-    border_opacity: glassSettings.borderOpacity,
-    chroma: glassSettings.chroma,
-    frost: glassSettings.frost,
-    beer: glassSettings.beer,
-    caustic: glassSettings.caustic
+    border_opacity: nextGlassSettings.borderOpacity,
+    chroma: nextGlassSettings.chroma,
+    frost: nextGlassSettings.frost,
+    beer: nextGlassSettings.beer,
+    caustic: nextGlassSettings.caustic
   };
 
-  // Clean backup so closeSettings does not revert them
-  backupGlassSettings = null;
-
-  closeSettings();
-
   try {
-    await invoke("update_settings", { settings });
+    await invoke("update_settings", { settings: nextSettings });
+    // Success: commit to global variables
+    settings = nextSettings;
+    glassSettings = nextGlassSettings;
+    applyTheme(settings.theme);
+    backupGlassSettings = null;
+    closeSettings();
     try {
       await appWindow.hide();
     } catch (e) {
@@ -1784,6 +1785,7 @@ async function saveSettingsConfig() {
   } catch (error) {
     console.error("[FromZero] Save settings error:", error);
     if (footerStatus) footerStatus.textContent = `${APP_VERSION} · 保存设置失败: ${error}`;
+    alert("保存设置失败: " + error);
   }
 }
 
@@ -2051,6 +2053,7 @@ async function showPreview(item) {
 
 // Hide preview panel
 function hidePreview() {
+  clearTimeout(previewDebounceTimeout);
   const previewPanel = document.getElementById("preview-panel");
   if (previewPanel) previewPanel.classList.remove("active");
   const previewContent = document.getElementById("preview-content");

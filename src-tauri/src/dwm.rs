@@ -16,14 +16,13 @@ pub fn set_dwm_attribute(raw_hwnd: *mut c_void, attribute: u32, value: u32) -> R
     ) -> i32;
 
     unsafe {
-        let module_name = std::ffi::CString::new("dwmapi.dll")
-            .expect("hardcoded ASCII string");
+        let module_name = std::ffi::CString::new("dwmapi.dll").expect("hardcoded ASCII string");
         let handle = winapi::um::libloaderapi::LoadLibraryA(module_name.as_ptr());
         if handle.is_null() {
             return Err("Failed to load dwmapi.dll".to_string());
         }
-        let func_name = std::ffi::CString::new("DwmSetWindowAttribute")
-            .expect("hardcoded ASCII string");
+        let func_name =
+            std::ffi::CString::new("DwmSetWindowAttribute").expect("hardcoded ASCII string");
         let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle, func_name.as_ptr());
         if proc_addr.is_null() {
             winapi::um::libloaderapi::FreeLibrary(handle);
@@ -41,7 +40,10 @@ pub fn set_dwm_attribute(raw_hwnd: *mut c_void, attribute: u32, value: u32) -> R
         if hr == 0 {
             Ok(())
         } else {
-            Err(format!("DwmSetWindowAttribute({}) failed: hr = {}", attribute, hr))
+            Err(format!(
+                "DwmSetWindowAttribute({}) failed: hr = {}",
+                attribute, hr
+            ))
         }
     }
 }

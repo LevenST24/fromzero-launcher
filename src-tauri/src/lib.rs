@@ -1,8 +1,8 @@
+mod capture;
 mod commands;
+mod dwm;
 mod indexer;
 mod settings;
-mod dwm;
-mod capture;
 
 use crate::commands::AppState;
 use std::sync::Mutex;
@@ -94,13 +94,12 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .register_uri_scheme_protocol("bgframe", |_app, _request| {
-            let since_seq: Option<u64> = _request.uri().query()
-                .and_then(|q| {
-                    q.split('&')
-                        .find(|pair| pair.starts_with("since="))
-                        .and_then(|pair| pair.split('=').nth(1))
-                        .and_then(|val| val.parse::<u64>().ok())
-                });
+            let since_seq: Option<u64> = _request.uri().query().and_then(|q| {
+                q.split('&')
+                    .find(|pair| pair.starts_with("since="))
+                    .and_then(|pair| pair.split('=').nth(1))
+                    .and_then(|val| val.parse::<u64>().ok())
+            });
 
             let frame_opt = {
                 let guard = crate::capture::LATEST_FRAME.lock().unwrap();
@@ -129,7 +128,10 @@ pub fn run() {
                         .header("X-Frame-Height", f.h.to_string())
                         .header("X-Frame-Seq", f.seq.to_string())
                         .header("Access-Control-Allow-Origin", "*")
-                        .header("Access-Control-Expose-Headers", "X-Frame-Width, X-Frame-Height, X-Frame-Seq")
+                        .header(
+                            "Access-Control-Expose-Headers",
+                            "X-Frame-Width, X-Frame-Height, X-Frame-Seq",
+                        )
                         .body(data)
                         .unwrap()
                 }
@@ -171,9 +173,24 @@ pub fn run() {
                 return Err(Box::from("Main window not found during setup"));
             };
 
+            window.on_window_event(move |event| match event {
+                tauri::WindowEvent::Focused(focused) => {
+                    if !*focused {
+                        crate::capture::stop();
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    crate::capture::stop();
+                }
+                _ => {}
+            });
+
             // 1. Load settings
             let settings = settings::load_settings(app.handle());
-            crate::capture::CAPTURE_FPS.store(settings.glass_settings.glass_fps as u32, std::sync::atomic::Ordering::Relaxed);
+            crate::capture::CAPTURE_FPS.store(
+                settings.glass_settings.glass_fps as u32,
+                std::sync::atomic::Ordering::Relaxed,
+            );
 
             // 1.5. Clear old low-res icon cache to force extraction of high-res icons
             let cache_dir = app.path().app_cache_dir().unwrap_or_default();
@@ -234,7 +251,9 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.set_focus();
             } else {
-                eprintln!("[FromZero] Booted silently via autostart. Window remains hidden in tray.");
+                eprintln!(
+                    "[FromZero] Booted silently via autostart. Window remains hidden in tray."
+                );
             }
 
             // 6. DWM Acrylic (desktop blur) + native rounding.
@@ -257,16 +276,17 @@ pub fn run() {
 
 #[cfg(target_os = "windows")]
 fn remove_dwm_border(window: &WebviewWindow) {
-    use std::ffi::c_void;
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWCP_DONOTROUND: u32 = 1;
     const DWM_COLOR_NONE: u32 = 0xFFFFFFFE;
 
     if let Ok(hwnd) = window.hwnd() {
-        let raw_hwnd = hwnd.0 as *mut c_void;
+        let raw_hwnd = hwnd.0;
         match dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND) {
-            Ok(()) => eprintln!("[FromZero] ✓ Native DWM window rounding disabled (letting WebGL shape corners)"),
+            Ok(()) => eprintln!(
+                "[FromZero] ✓ Native DWM window rounding disabled (letting WebGL shape corners)"
+            ),
             Err(e) => eprintln!("[FromZero] DWM disable rounding failed: {e}"),
         }
         match dwm::set_dwm_attribute(raw_hwnd, DWMWA_BORDER_COLOR, DWM_COLOR_NONE) {
@@ -285,8 +305,7 @@ fn exclude_from_capture(window: &WebviewWindow) {
     const WDA_EXCLUDEFROMCAPTURE: u32 = 0x11;
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
-            SetWindowDisplayAffinity(hwnd.0 as *mut c_void, WDA_EXCLUDEFROMCAPTURE);
+            SetWindowDisplayAffinity(hwnd.0, WDA_EXCLUDEFROMCAPTURE);
         }
     }
 }
-
