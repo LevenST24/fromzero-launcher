@@ -130,18 +130,8 @@
 
           <div class="tab-panel" id="panel-glass">
             <div class="settings-group">
-              <label class="settings-label" title="毛玻璃背景的模糊程度 (CSS backdrop-filter blur)">玻璃模糊: <span id="val-glass-blur">8</span>px</label>
+              <label class="settings-label" title="毛玻璃背景的磨砂模糊程度">背景模糊: <span id="val-glass-blur">8</span>px</label>
               <input type="range" class="settings-slider" id="slider-glass-blur" min="0" max="30" value="8" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="毛玻璃容器边缘反光边框亮度比例">边框强度 (Border): <span id="val-border-opacity">0.60</span></label>
-              <input type="range" class="settings-slider" id="slider-border-opacity" min="0.0" max="1.0" step="0.05" value="0.60" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="实时折射背景的刷新率限制 (FPS)">折射帧率 (FPS): <span id="val-glass-fps">60</span></label>
-              <input type="range" class="settings-slider" id="slider-glass-fps" min="15" max="60" step="5" value="60" />
             </div>
 
             <div class="settings-group">
@@ -150,23 +140,48 @@
             </div>
 
             <div class="settings-group">
-              <label class="settings-label" title="彩虹色散反射偏振差值">彩虹色散: <span id="val-chroma">0.045</span></label>
-              <input type="range" class="settings-slider" id="slider-chroma" min="0" max="0.1" step="0.005" value="0.045" />
+              <label class="settings-label" title="玻璃边缘斜角高光和内部发光强度">边缘高光: <span id="val-edge-hl">0.50</span></label>
+              <input type="range" class="settings-slider" id="slider-edge-hl" min="0.0" max="2.0" step="0.05" value="0.50" />
             </div>
 
             <div class="settings-group">
-              <label class="settings-label" title="WebGL内部降分辨率磨砂噪声幅度">磨砂模糊: <span id="val-frost">3.0</span></label>
-              <input type="range" class="settings-slider" id="slider-frost" min="0" max="10" step="0.5" value="3.0" />
+              <label class="settings-label" title="镜面反射反射高光亮度">镜面反射: <span id="val-specular">0.50</span></label>
+              <input type="range" class="settings-slider" id="slider-specular" min="0.0" max="2.0" step="0.05" value="0.50" />
             </div>
 
             <div class="settings-group">
-              <label class="settings-label" title="比尔-朗伯定律冰蓝边框吸光厚度">边缘吸光: <span id="val-beer">15</span></label>
-              <input type="range" class="settings-slider" id="slider-beer" min="0" max="50" step="1" value="15" />
+              <label class="settings-label" title="倾斜视角的边缘反光强度">菲涅尔反射: <span id="val-fresnel">1.00</span></label>
+              <input type="range" class="settings-slider" id="slider-fresnel" min="0.0" max="5.0" step="0.1" value="1.00" />
             </div>
 
             <div class="settings-group">
-              <label class="settings-label" title="光线汇聚焦散强度">焦散强度: <span id="val-caustic">0.6</span></label>
-              <input type="range" class="settings-slider" id="slider-caustic" min="0" max="2" step="0.1" value="0.6" />
+              <label class="settings-label" title="玻璃窗口四角的圆角半径（像素）">圆角半径: <span id="val-corner-radius">32</span>px</label>
+              <input type="range" class="settings-slider" id="slider-corner-radius" min="0" max="100" step="1" value="32" />
+            </div>
+
+            <div class="settings-group">
+              <label class="settings-label" title="玻璃窗口边缘斜切倒角的宽度（像素）">斜角宽度: <span id="val-z-radius">75</span>px</label>
+              <input type="range" class="settings-slider" id="slider-z-radius" min="5" max="150" step="1" value="75" />
+            </div>
+
+            <div class="settings-group">
+              <label class="settings-label" title="整个玻璃卡片的整体不透明度">玻璃不透明度: <span id="val-opacity">1.00</span></label>
+              <input type="range" class="settings-slider" id="slider-opacity" min="0.0" max="1.0" step="0.05" value="1.00" />
+            </div>
+
+            <div class="settings-group">
+              <label class="settings-label" title="窗口底层投射阴影的透明度">阴影不透明度: <span id="val-shadow-opacity">0.30</span></label>
+              <input type="range" class="settings-slider" id="slider-shadow-opacity" min="0.0" max="1.0" step="0.05" value="0.30" />
+            </div>
+
+            <div class="settings-group">
+              <label class="settings-label" title="底层投影的羽化边缘发散宽度">阴影散布: <span id="val-shadow-spread">16</span>px</label>
+              <input type="range" class="settings-slider" id="slider-shadow-spread" min="0" max="50" step="1" value="16" />
+            </div>
+
+            <div class="settings-group">
+              <label class="settings-label" title="实时折射背景的刷新帧率 (FPS)">折射帧率 (FPS): <span id="val-glass-fps">60</span></label>
+              <input type="range" class="settings-slider" id="slider-glass-fps" min="15" max="60" step="5" value="60" />
             </div>
           </div>
 

@@ -104,7 +104,7 @@ body {
   height: 530px;
   z-index: -1;
   pointer-events: none;
-  filter: blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92);
+  filter: none;
 }
 
 /* Glass tint layer — color tone + saturation over DWM Acrylic blur.

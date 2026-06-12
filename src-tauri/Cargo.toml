@@ -1,6 +1,6 @@
 [package]
 name = "fromzero-launcher"
-version = "0.2.3-preview"
+version = "0.2.3"
 description = "A Tauri App"
 authors = ["LevenST"]
 edition = "2021"

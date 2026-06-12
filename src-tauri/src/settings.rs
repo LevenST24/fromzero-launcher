@@ -31,6 +31,24 @@ pub struct GlassSettings {
     pub search_offset: i32,
     #[serde(default = "default_results_height")]
     pub results_height: i32,
+
+    // New Liquid Glass properties
+    #[serde(default = "default_edge_hl")]
+    pub edge_hl: f64,
+    #[serde(default = "default_specular")]
+    pub specular: f64,
+    #[serde(default = "default_fresnel")]
+    pub fresnel: f64,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f64,
+    #[serde(default = "default_z_radius")]
+    pub z_radius: f64,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f64,
+    #[serde(default = "default_shadow_spread")]
+    pub shadow_spread: f64,
 }
 
 fn default_glass_blur() -> i32 { 8 }
@@ -45,6 +63,15 @@ fn default_squircle_n() -> f64 { 4.5 }
 fn default_search_height() -> i32 { 46 }
 fn default_search_offset() -> i32 { 10 }
 fn default_results_height() -> i32 { 280 }
+
+fn default_edge_hl() -> f64 { 0.50 }
+fn default_specular() -> f64 { 0.50 }
+fn default_fresnel() -> f64 { 1.00 }
+fn default_corner_radius() -> f64 { 32.0 }
+fn default_z_radius() -> f64 { 75.0 }
+fn default_opacity() -> f64 { 1.00 }
+fn default_shadow_opacity() -> f64 { 0.30 }
+fn default_shadow_spread() -> f64 { 16.0 }
 
 impl Default for GlassSettings {
     fn default() -> Self {
@@ -61,6 +88,14 @@ impl Default for GlassSettings {
             search_height: default_search_height(),
             search_offset: default_search_offset(),
             results_height: default_results_height(),
+            edge_hl: default_edge_hl(),
+            specular: default_specular(),
+            fresnel: default_fresnel(),
+            corner_radius: default_corner_radius(),
+            z_radius: default_z_radius(),
+            opacity: default_opacity(),
+            shadow_opacity: default_shadow_opacity(),
+            shadow_spread: default_shadow_spread(),
         }
     }
 }

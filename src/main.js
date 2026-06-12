@@ -61,17 +61,29 @@ let settings = {};
 // Liquid Glass customizable parameters
 let glassSettings = {
   glassBlur: 8,
-  borderOpacity: 0.60,
   glassFps: 60,
   strength: 30,
+  searchHeight: 46,
+  searchOffset: 10,
+  resultsHeight: 280,
+  
+  // New Liquid Glass properties
+  edgeHl: 0.50,
+  specular: 0.50,
+  fresnel: 1.00,
+  cornerRadius: 32.0,
+  zRadius: 75.0,
+  opacity: 1.00,
+  shadowOpacity: 0.30,
+  shadowSpread: 16.0,
+  
+  // Deprecated fields kept for compatibility
+  borderOpacity: 0.60,
   chroma: 0.045,
   frost: 3.0,
   beer: 15,
   caustic: 0.6,
-  squircleN: 4.5,
-  searchHeight: 46,
-  searchOffset: 10,
-  resultsHeight: 280
+  squircleN: 4.5
 };
 let backupGlassSettings = null;
 
@@ -103,11 +115,16 @@ let peekTimer = null;
 // WebGL state
 let gl = null;
 let glProgram = null;
-let textureImage = null;
+let bgTexture = null;
+let blurTexture = null;
+let offscreenCanvas = null;
+let offscreenCtx = null;
+let blurCanvas = null;
+let blurCtx = null;
 let webglInitialized = false;
 let lastRenderedSeq = 0;
 
-// Mouse tracking for dynamic spotlight & metaballs
+// Mouse tracking
 let currentMouseX = 320;
 let currentMouseY = 225;
 document.addEventListener("mousemove", (e) => {
@@ -116,27 +133,27 @@ document.addEventListener("mousemove", (e) => {
 });
 
 // Uniform locations
+let bgTexLocation = null;
+let blurTexLocation = null;
 let resolutionLocation = null;
 let centerLocation = null;
-let halfSizeLocation = null;
-let cornerLocation = null;
-let bandLocation = null;
-let strengthLocation = null;
-let magnifyLocation = null;
+let sizeLocation = null;
+let radiusLocation = null;
+let refractLocation = null;
 let chromaLocation = null;
-let imageLocation = null;
-let squircleNLocation = null;
-let specularLocation = null;
-let frostLocation = null;
-let beerThicknessLocation = null;
-let causticStrengthLocation = null;
-let mouseLocation = null;
-let dprLocation = null;
+let edgeHLLocation = null;
+let specLocation = null;
+let fresnelLocation = null;
+let distortLocation = null;
+let alphaLocation = null;
+let satLocation = null;
 let tintLocation = null;
-let thicknessLocation = null;
-let domeHeightLocation = null;
-let iorLocation = null;
-let bgDistLocation = null;
+let zRadiusLocation = null;
+let brightnessLocation = null;
+let shadowAlphaLocation = null;
+let shadowSpreadLocation = null;
+let shadowOffYLocation = null;
+let bevelModeLocation = null;
 
 // State machine & lifecycle control
 let glassState = "Acrylic"; // "Acrylic", "Starting", "LiquidGlass", "Stopping"
@@ -180,7 +197,7 @@ const SYSTEM_COMMANDS = [
   { key: "restart", name: "重启计算机 (Restart)", desc: "重新启动操作系统", badge: "系统" }
 ];
 
-const APP_VERSION = "v0.2.3preview";
+const APP_VERSION = "v0.2.3";
 
 // =============================================
 // Window Focus/Blur Management & State Machine
@@ -337,13 +354,20 @@ function applyVisualSettings(config) {
 
   activeGlassFps = config.glassFps || 60;
   glassSettings.glassBlur = config.glassBlur;
-  glassSettings.borderOpacity = config.borderOpacity;
   glassSettings.glassFps = config.glassFps;
   glassSettings.strength = config.strength ?? glassSettings.strength;
-  glassSettings.chroma = config.chroma ?? glassSettings.chroma;
-  glassSettings.frost = config.frost ?? glassSettings.frost;
-  glassSettings.beer = config.beer ?? glassSettings.beer;
-  glassSettings.caustic = config.caustic ?? glassSettings.caustic;
+  
+  // New Liquid Glass properties
+  glassSettings.edgeHl = config.edgeHl ?? glassSettings.edgeHl;
+  glassSettings.specular = config.specular ?? glassSettings.specular;
+  glassSettings.fresnel = config.fresnel ?? glassSettings.fresnel;
+  glassSettings.cornerRadius = config.cornerRadius ?? glassSettings.cornerRadius;
+  glassSettings.zRadius = config.zRadius ?? glassSettings.zRadius;
+  glassSettings.opacity = config.opacity ?? glassSettings.opacity;
+  glassSettings.shadowOpacity = config.shadowOpacity ?? glassSettings.shadowOpacity;
+  glassSettings.shadowSpread = config.shadowSpread ?? glassSettings.shadowSpread;
+
+  // Layout properties
   glassSettings.squircleN = config.squircleN ?? glassSettings.squircleN;
   glassSettings.searchHeight = config.searchHeight ?? glassSettings.searchHeight ?? 46;
   glassSettings.searchOffset = config.searchOffset ?? glassSettings.searchOffset ?? 10;
@@ -353,25 +377,8 @@ function applyVisualSettings(config) {
   container.style.setProperty("--search-offset", `${glassSettings.searchOffset}px`);
   container.style.setProperty("--results-height", `${glassSettings.resultsHeight}px`);
 
-  const b1 = (config.borderOpacity * 0.7).toFixed(3);
-  const b2 = (config.borderOpacity * 0.5).toFixed(3);
-  container.style.setProperty("--border1-opacity", b1);
-  container.style.setProperty("--border2-opacity", b2);
-
   // Set canvas blur CSS custom property directly (full range up to 30px)
   container.style.setProperty("--canvas-blur", `${config.glassBlur}px`);
-
-  const glassBlurLayer = document.querySelector('.glass-blur-layer');
-  if (glassBlurLayer) {
-    const isDark = !document.documentElement.hasAttribute('data-theme') ||
-                   document.documentElement.getAttribute('data-theme') === 'dark';
-    const tintOpacity = Math.max(0.01, config.glassBlur * 0.008 + 0.01).toFixed(3);
-    if (isDark) {
-      glassBlurLayer.style.backgroundColor = `rgba(18, 18, 24, ${tintOpacity})`;
-    } else {
-      glassBlurLayer.style.backgroundColor = `rgba(240, 240, 245, ${tintOpacity})`;
-    }
-  }
 
   // Toggle DWM Acrylic: only when not in LiquidGlass or Starting state
   if (glassState === "Acrylic" || glassState === "Stopping") {
@@ -406,13 +413,16 @@ const debouncedSetCaptureFps = (() => {
 function initSliderListeners() {
   const sliders = [
     { id: "slider-glass-blur", valId: "val-glass-blur", key: "glassBlur", isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", key: "borderOpacity", isFloat: true, isBorder: true },
     { id: "slider-strength", valId: "val-strength", key: "strength", isFloat: false },
-    { id: "slider-chroma", valId: "val-chroma", key: "chroma", isFloat: true, isDispersion: true },
-    { id: "slider-frost", valId: "val-frost", key: "frost", isFloat: true },
-    { id: "slider-beer", valId: "val-beer", key: "beer", isFloat: false },
-    { id: "slider-caustic", valId: "val-caustic", key: "caustic", isFloat: true },
-    { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true },
+    { id: "slider-edge-hl", valId: "val-edge-hl", key: "edgeHl", isFloat: true, precision: 2 },
+    { id: "slider-specular", valId: "val-specular", key: "specular", isFloat: true, precision: 2 },
+    { id: "slider-fresnel", valId: "val-fresnel", key: "fresnel", isFloat: true, precision: 1 },
+    { id: "slider-corner-radius", valId: "val-corner-radius", key: "cornerRadius", isFloat: false },
+    { id: "slider-z-radius", valId: "val-z-radius", key: "zRadius", isFloat: false },
+    { id: "slider-opacity", valId: "val-opacity", key: "opacity", isFloat: true, precision: 2 },
+    { id: "slider-shadow-opacity", valId: "val-shadow-opacity", key: "shadowOpacity", isFloat: true, precision: 2 },
+    { id: "slider-shadow-spread", valId: "val-shadow-spread", key: "shadowSpread", isFloat: false },
+    { id: "slider-squircle-n", valId: "val-squircle-n", key: "squircleN", isFloat: true, precision: 1 },
     { id: "slider-search-height", valId: "val-search-height", key: "searchHeight", isFloat: false },
     { id: "slider-search-offset", valId: "val-search-offset", key: "searchOffset", isFloat: false },
     { id: "slider-results-height", valId: "val-results-height", key: "resultsHeight", isFloat: false }
@@ -425,12 +435,8 @@ function initSliderListeners() {
       el.addEventListener("input", () => {
         const val = s.isFloat ? parseFloat(el.value) : parseInt(el.value);
         if (valEl) {
-          if (s.isDispersion) {
-            valEl.textContent = val.toFixed(3);
-          } else if (s.isBorder) {
-            valEl.textContent = val.toFixed(2);
-          } else if (s.isFloat) {
-            valEl.textContent = val.toFixed(1);
+          if (s.precision !== undefined) {
+            valEl.textContent = val.toFixed(s.precision);
           } else {
             valEl.textContent = val;
           }
@@ -478,17 +484,27 @@ function initSliderListeners() {
 function readSlidersState() {
   return {
     glassBlur: parseInt(document.getElementById("slider-glass-blur").value),
-    borderOpacity: parseFloat(document.getElementById("slider-border-opacity").value),
     glassFps: parseInt(document.getElementById("slider-glass-fps").value),
     strength: parseInt(document.getElementById("slider-strength").value),
-    chroma: parseFloat(document.getElementById("slider-chroma").value),
-    frost: parseFloat(document.getElementById("slider-frost").value),
-    beer: parseInt(document.getElementById("slider-beer").value),
-    caustic: parseFloat(document.getElementById("slider-caustic").value),
+    edgeHl: parseFloat(document.getElementById("slider-edge-hl").value),
+    specular: parseFloat(document.getElementById("slider-specular").value),
+    fresnel: parseFloat(document.getElementById("slider-fresnel").value),
+    cornerRadius: parseFloat(document.getElementById("slider-corner-radius").value),
+    zRadius: parseFloat(document.getElementById("slider-z-radius").value),
+    opacity: parseFloat(document.getElementById("slider-opacity").value),
+    shadowOpacity: parseFloat(document.getElementById("slider-shadow-opacity").value),
+    shadowSpread: parseFloat(document.getElementById("slider-shadow-spread").value),
     squircleN: parseFloat(document.getElementById("slider-squircle-n").value),
     searchHeight: parseInt(document.getElementById("slider-search-height").value),
     searchOffset: parseInt(document.getElementById("slider-search-offset").value),
-    resultsHeight: parseInt(document.getElementById("slider-results-height").value)
+    resultsHeight: parseInt(document.getElementById("slider-results-height").value),
+    
+    // Maintain old fields internally for compatibility
+    borderOpacity: glassSettings.borderOpacity,
+    chroma: glassSettings.chroma,
+    frost: glassSettings.frost,
+    beer: glassSettings.beer,
+    caustic: glassSettings.caustic
   };
 }
 
@@ -496,14 +512,17 @@ function readSlidersState() {
 function syncSlidersToConfig(config) {
   const mappings = [
     { id: "slider-glass-blur", valId: "val-glass-blur", val: config.glassBlur, isFloat: false },
-    { id: "slider-border-opacity", valId: "val-border-opacity", val: config.borderOpacity, isFloat: true, isBorder: true },
     { id: "slider-glass-fps", valId: "val-glass-fps", val: config.glassFps, isFloat: false },
     { id: "slider-strength", valId: "val-strength", val: config.strength, isFloat: false },
-    { id: "slider-chroma", valId: "val-chroma", val: config.chroma, isFloat: true, isDispersion: true },
-    { id: "slider-frost", valId: "val-frost", val: config.frost, isFloat: true },
-    { id: "slider-beer", valId: "val-beer", val: config.beer, isFloat: false },
-    { id: "slider-caustic", valId: "val-caustic", val: config.caustic, isFloat: true },
-    { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true },
+    { id: "slider-edge-hl", valId: "val-edge-hl", val: config.edgeHl, isFloat: true, precision: 2 },
+    { id: "slider-specular", valId: "val-specular", val: config.specular, isFloat: true, precision: 2 },
+    { id: "slider-fresnel", valId: "val-fresnel", val: config.fresnel, isFloat: true, precision: 1 },
+    { id: "slider-corner-radius", valId: "val-corner-radius", val: config.cornerRadius, isFloat: false },
+    { id: "slider-z-radius", valId: "val-z-radius", val: config.zRadius, isFloat: false },
+    { id: "slider-opacity", valId: "val-opacity", val: config.opacity, isFloat: true, precision: 2 },
+    { id: "slider-shadow-opacity", valId: "val-shadow-opacity", val: config.shadowOpacity, isFloat: true, precision: 2 },
+    { id: "slider-shadow-spread", valId: "val-shadow-spread", val: config.shadowSpread, isFloat: false },
+    { id: "slider-squircle-n", valId: "val-squircle-n", val: config.squircleN, isFloat: true, precision: 1 },
     { id: "slider-search-height", valId: "val-search-height", val: config.searchHeight ?? 46, isFloat: false },
     { id: "slider-search-offset", valId: "val-search-offset", val: config.searchOffset ?? 10, isFloat: false },
     { id: "slider-results-height", valId: "val-results-height", val: config.resultsHeight ?? 280, isFloat: false }
@@ -515,12 +534,8 @@ function syncSlidersToConfig(config) {
     if (el) {
       el.value = m.val;
       if (valEl) {
-        if (m.isDispersion) {
-          valEl.textContent = m.val.toFixed(3);
-        } else if (m.isBorder) {
-          valEl.textContent = m.val.toFixed(2);
-        } else if (m.isFloat) {
-          valEl.textContent = m.val.toFixed(1);
+        if (m.precision !== undefined) {
+          valEl.textContent = m.val.toFixed(m.precision);
         } else {
           valEl.textContent = m.val;
         }
@@ -578,292 +593,189 @@ function initWebGL(canvas) {
       in vec2 v_texCoord;
       out vec4 fragColor;
 
-      uniform sampler2D u_image;
+      uniform sampler2D u_bgTex;
+      uniform sampler2D u_blurTex;
       uniform vec2 u_resolution;
       uniform vec2 u_center;
-      uniform vec2 u_halfSize;
-      uniform float u_corner;
-      uniform float u_band;
-      uniform float u_strength;
-      uniform float u_magnify;
+      uniform vec2 u_size;
+      uniform float u_radius;
+      uniform float u_refract;
       uniform float u_chroma;
-      uniform vec2 u_mouse;
-      uniform float u_specularStrength;
-      uniform float u_frost;
-      uniform float u_beerThickness;
-      uniform float u_causticStrength;
-      uniform float u_squircleN;
-      uniform float u_dpr;
+      uniform float u_edgeHL;
+      uniform float u_spec;
+      uniform float u_fresnel;
+      uniform float u_distort;
+      uniform float u_alpha;
+      uniform float u_sat;
       uniform vec4 u_tint;
+      uniform float u_zRadius;
+      uniform float u_brightness;
+      uniform float u_shadowAlpha;
+      uniform float u_shadowSpread;
+      uniform float u_shadowOffY;
+      uniform float u_bevelMode;
 
-      // New Height Field & Snell Refraction uniforms
-      uniform float u_thickness;
-      uniform float u_domeHeight;
-      uniform float u_ior;
-      uniform float u_bgDist;
-
-      // Color conversion formulas: sRGB <-> LCh (via XYZ and Lab)
-      vec3 srgb2rgb(vec3 c) {
-        return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
-      }
-      vec3 rgb2srgb(vec3 c) {
-        return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-      }
-      vec3 rgb2xyz(vec3 c) {
-        mat3 m = mat3(
-          0.4124, 0.2126, 0.0193,
-          0.3576, 0.7152, 0.1192,
-          0.1805, 0.0722, 0.9505
-        );
-        return c * m;
-      }
-      vec3 xyz2rgb(vec3 c) {
-        mat3 m = mat3(
-          3.2406, -0.9689, 0.0557,
-          -1.5372, 1.8758, -0.2040,
-          -0.4986, 0.0415, 1.0570
-        );
-        return c * m;
-      }
-      float xyz_f(float t) {
-        return mix(7.787 * t + 16.0 / 116.0, pow(t, 1.0 / 3.0), step(0.008856, t));
-      }
-      vec3 xyz2lab(vec3 c) {
-        vec3 white = vec3(0.950456, 1.0, 1.088754);
-        vec3 cn = c / white;
-        vec3 f = vec3(xyz_f(cn.x), xyz_f(cn.y), xyz_f(cn.z));
-        return vec3(116.0 * f.y - 16.0, 500.0 * (f.x - f.y), 200.0 * (f.y - f.z));
-      }
-      float lab_f_inv(float t) {
-        return mix(0.1284 * (t - 16.0 / 116.0), t * t * t, step(0.206897, t));
-      }
-      vec3 lab2xyz(vec3 c) {
-        vec3 white = vec3(0.950456, 1.0, 1.088754);
-        float p = (c.x + 16.0) / 116.0;
-        return white * vec3(lab_f_inv(p + c.y / 500.0), lab_f_inv(p), lab_f_inv(p - c.z / 200.0));
-      }
-      vec3 lab2lch(vec3 c) {
-        float l = c.x;
-        float c_val = length(c.yz);
-        float h = atan(c.z, c.y) * 57.2957795;
-        if (h < 0.0) h += 360.0;
-        return vec3(l, c_val, h);
-      }
-      vec3 lch2lab(vec3 c) {
-        float h_rad = c.z * 0.01745329;
-        return vec3(c.x, c.y * cos(h_rad), c.y * sin(h_rad));
-      }
-      vec3 srgb2lch(vec3 c) {
-        return lab2lch(xyz2lab(rgb2xyz(srgb2rgb(c))));
-      }
-      vec3 lch2srgb(vec3 c) {
-        return rgb2srgb(xyz2rgb(lab2xyz(lch2lab(c))));
+      // Rounded-rect signed distance
+      float rrSDF(vec2 p, vec2 b, float r) {
+        vec2 q = abs(p) - b + vec2(r);
+        return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
       }
 
-      // SDF functions
-      float superellipseCornerSDF(vec2 p, float r, float n) {
-        p = abs(p);
-        return pow(pow(max(p.x, 0.0), n) + pow(max(p.y, 0.0), n), 1.0 / n) - r;
-      }
-
-      float roundedRectSDF(vec2 p, vec2 center, vec2 size, float cornerRadius, float n) {
-        p -= center;
-        vec2 extents = size * 0.5 - vec2(cornerRadius);
-        vec2 q = abs(p) - extents;
-        if (q.x > 0.0 && q.y > 0.0) {
-          return superellipseCornerSDF(q, cornerRadius, n);
-        }
-        return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - cornerRadius;
-      }
-
-      // Combined Scene SDF function (centered round-rect)
-      float getSDF(vec2 p) {
-        vec2 cardSize = (u_halfSize + vec2(u_corner)) * 2.0;
-        return roundedRectSDF(p, vec2(0.0), cardSize, u_corner, u_squircleN);
-      }
-
-      float random(vec2 st) {
-        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
-      }
-
-      // 6-Channel Chromatic Dispersion sampling to create premium realistic rainbow refractions
-      vec3 sample6ChannelDispersion(sampler2D tex, vec2 baseUV, vec2 normal, float strength, float chroma) {
-        float r_ior = 1.0 + chroma * 1.5;
-        float y_ior = 1.0 + chroma * 0.9;
-        float g_ior = 1.0 + chroma * 0.3;
-        float c_ior = 1.0 - chroma * 0.3;
-        float b_ior = 1.0 - chroma * 0.9;
-        float v_ior = 1.0 - chroma * 1.5;
-        
-        vec2 offR = normal * strength * r_ior;
-        vec2 offY = normal * strength * y_ior;
-        vec2 offG = normal * strength * g_ior;
-        vec2 offC = normal * strength * c_ior;
-        vec2 offB = normal * strength * b_ior;
-        vec2 offV = normal * strength * v_ior;
-        
-        vec3 cRed    = texture(tex, clamp(baseUV + offR, 0.001, 0.999)).rgb;
-        vec3 cYellow = texture(tex, clamp(baseUV + offY, 0.001, 0.999)).rgb;
-        vec3 cGreen  = texture(tex, clamp(baseUV + offG, 0.001, 0.999)).rgb;
-        vec3 cCyan   = texture(tex, clamp(baseUV + offC, 0.001, 0.999)).rgb;
-        vec3 cBlue   = texture(tex, clamp(baseUV + offB, 0.001, 0.999)).rgb;
-        vec3 cViolet = texture(tex, clamp(baseUV + offV, 0.001, 0.999)).rgb;
-        
-        // Convert colors to 6-channel coordinates
-        float r = cRed.r * 0.5;
-        float g = cGreen.g * 0.5;
-        float b = cBlue.b * 0.5;
-        float y = (2.0 * cYellow.r + 2.0 * cYellow.g - cYellow.b) / 6.0;
-        float c = (2.0 * cCyan.g + 2.0 * cCyan.b - cCyan.r) / 6.0;
-        float v = (2.0 * cViolet.b + 2.0 * cViolet.r - cViolet.g) / 6.0;
-        
-        // Reconstruct back to RGB
-        vec3 rgb;
-        rgb.r = r + (2.0 * v + 2.0 * y - c) / 3.0;
-        rgb.g = g + (2.0 * y + 2.0 * c - v) / 3.0;
-        rgb.b = b + (2.0 * c + 2.0 * v - y) / 3.0;
-        return rgb;
-      }
-
-      // Neutral clear glass absorption (absorbs all channels equally to prevent greenish/blueish tint)
-      vec3 applyBeerAbsorption(vec3 color, float t, float thickness) {
-        vec3 absorptionCoeff = vec3(0.012, 0.012, 0.012);
-        // More absorption at edge (when t is small) and less in the center (when t is large)
-        float pathLength = (1.0 - t * 0.5) * thickness;
-        vec3 transmission = exp(-absorptionCoeff * pathLength);
-        return color * transmission;
-      }
-
-      // Height field: circular edge bevel + parabolic central dome
-      float heightField(vec2 p) {
-        float d = -getSDF(p); // d is positive inside
+      // Bevel height field
+      float bevelHeight(float d, float zR) {
         if (d <= 0.0) return 0.0;
-        
-        // 1) bevel: edge bevel profile from 0 to 1
-        float x = clamp(d / u_band, 0.0, 1.0);
-        float bevel = sqrt(max(1.0 - (1.0 - x) * (1.0 - x), 0.0));
-        
-        // 2) dome: parabolic curvature
-        vec2 q = p / (u_halfSize + vec2(u_corner));
-        float dome = max(1.0 - dot(q, q), 0.0);
-        
-        return u_thickness * bevel + u_domeHeight * dome;
+        if (d >= zR) return zR;
+        return sqrt(d * (2.0 * zR - d));
+      }
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
       }
 
       void main() {
         vec2 px = v_texCoord * u_resolution;
-        vec2 p = px - u_center;
-        
-        float dC = -getSDF(p);
-        float zR = u_band;
-        
-        // Calculate normal vector via height gradient finite differences
-        float e = 1.5;
-        float dR = -getSDF(p + vec2(e, 0.0));
-        float dL = -getSDF(p - vec2(e, 0.0));
-        float dU = -getSDF(p + vec2(0.0, e));
-        float dD = -getSDF(p - vec2(0.0, e));
-        
-        float hC = heightField(p);
-        float hR = heightField(p + vec2(e, 0.0));
-        float hL = heightField(p - vec2(e, 0.0));
-        float hU = heightField(p + vec2(0.0, e));
-        float hD = heightField(p - vec2(0.0, e));
-        
+        vec2 half_ = u_size * 0.5;
+        float r = min(u_radius, min(half_.x, half_.y));
+        float sdf = rrSDF(px - u_center, half_, r);
+
+        // ------ Shadow (outside panel) ------
+        if (sdf > 0.0) {
+          float sdfShadow = rrSDF(px - u_center - vec2(0.0, u_shadowOffY), half_, r);
+          float d = max(sdfShadow - 1.0, 0.0);
+          float spread = max(u_shadowSpread, 1.0);
+          float falloff = 1.0 / (spread * spread);
+          float outerShadow = exp(-d * d * falloff) * 0.65;
+          float contactShadow = exp(-d * 0.08 / max(spread * 0.04, 0.01)) * 0.35;
+          float shadow = (outerShadow + contactShadow) * u_shadowAlpha;
+          
+          // Output shadow outside card with transparent background
+          fragColor = vec4(0.0, 0.0, 0.0, shadow);
+          return;
+        }
+
+        // ------ Inside Glass Panel ------
+        float mask = 1.0 - smoothstep(-1.5, 0.5, sdf);
+        float maxD = min(half_.x, half_.y);
+        float inside = -sdf;
+        float edge = smoothstep(maxD * 0.35, 0.0, inside);
+
+        // Surface normal (top surface) via bevel height field
+        float zR = u_zRadius;
+        float e = 2.0;
+        float dC = inside;
+        float dR = -rrSDF(px + vec2(e, 0.0) - u_center, half_, r);
+        float dL = -rrSDF(px - vec2(e, 0.0) - u_center, half_, r);
+        float dU = -rrSDF(px + vec2(0.0, e) - u_center, half_, r);
+        float dD = -rrSDF(px - vec2(0.0, e) - u_center, half_, r);
+        float hC = bevelHeight(dC, zR);
+        float hR = bevelHeight(dR, zR);
+        float hL = bevelHeight(dL, zR);
+        float hU = bevelHeight(dU, zR);
+        float hD = bevelHeight(dD, zR);
         vec2 hGrad = vec2(hR - hL, hU - hD) / (2.0 * e);
         vec3 N = normalize(vec3(-hGrad, 1.0));
-        
-        // Snell Refraction
-        vec3 I = vec3(0.0, 0.0, -1.0); // incident vector
-        
-        // 1. Refract entering the front glass surface
-        vec3 R1 = refract(I, N, 1.0 / u_ior);
-        if (length(R1) < 0.0001) R1 = refract(I, N, 1.0 / 1.5); // fallback
-        
-        // Offset inside the glass medium
-        vec2 offset1 = R1.xy / max(-R1.z, 0.0001) * hC;
-        
-        // 2. Refract exiting the flat back glass surface
-        vec3 R2 = refract(R1, vec3(0.0, 0.0, 1.0), u_ior);
-        if (length(R2) < 0.0001) R2 = R1; // fallback
-        
-        // Offset in the air gap from glass to background
-        vec2 offset2 = R2.xy / max(-R2.z, 0.0001) * u_bgDist;
-        
-        vec2 refrPx = offset1 + offset2;
-        vec2 refrUV = refrPx / u_resolution;
 
-        // Frosting noise offset
-        float angle = random(v_texCoord) * 6.283185;
-        float dist = sqrt(random(v_texCoord + 0.5)) * u_frost * 4.0;
-        vec2 noise_off = vec2(cos(angle), sin(angle)) / u_resolution * dist;
+        float depth = smoothstep(0.0, zR, inside);
+
+        // ------ Refraction ------
+        vec2 pxToUV = vec2(1.0, -1.0) / u_resolution;
+        float ior = 1.5;
+        float refrPow = 1.0 - 1.0 / ior;
+        float thickness = hC * 2.0;
+        float thickNorm = thickness / max(zR * 2.0, 1.0);
+        vec2 refrPx;
+        if (u_bevelMode < 0.5) {
+          // Biconvex: physically-based dual-surface refraction
+          vec2 exitRefr = hGrad * refrPow;
+          vec2 entryRefr = hGrad * refrPow;
+          vec2 throughRefr = entryRefr * thickNorm * 0.5;
+          refrPx = (exitRefr + entryRefr + throughRefr) * u_refract * 30.0;
+          vec2 centerDir = -(px - u_center) / max(half_, vec2(1.0));
+          refrPx += centerDir * u_refract * 4.0 * depth;
+        } else {
+          // Dome (plano-convex): uniform magnification
+          refrPx = -(px - u_center) * u_refract * depth * 0.35;
+        }
+        vec2 refr = refrPx * pxToUV;
+
+        // ------ Micro-distortion noise ------
+        vec2 ns = px * 0.08;
+        vec2 absPxToUV = vec2(1.0) / u_resolution;
+        vec2 micro = (vec2(hash(ns), hash(ns + vec2(37.0))) - 0.5) * u_distort * 4.0 * absPxToUV;
+
+        // ------ Chromatic aberration ------
+        float caS = u_chroma * 18.0 * (edge * 0.7 + 0.3) * 2.0;
+        vec2 caD = N.xy * caS * pxToUV;
+        vec2 base = v_texCoord + refr + micro;
+
+        vec3 sharp = vec3(
+          texture(u_bgTex,  base + caD).r,
+          texture(u_bgTex,  base).g,
+          texture(u_bgTex,  base - caD).b
+        );
+        vec3 blur = vec3(
+          texture(u_blurTex, base + caD).r,
+          texture(u_blurTex, base).g,
+          texture(u_blurTex, base - caD).b
+        );
         
-        vec2 baseUV = v_texCoord + refrUV + noise_off;
-        
-        // Chromatic dispersion
-        vec2 normal2D = length(N.xy) > 0.0001 ? normalize(N.xy) : vec2(0.0);
-        vec3 glassColor = sample6ChannelDispersion(u_image, baseUV, normal2D, length(refrUV) * 0.8, u_chroma);
-        
-        // Apply colorless transparent Beer's absorption
-        float t = clamp(dC / zR, 0.0, 1.0);
-        glassColor = applyBeerAbsorption(glassColor, t, u_beerThickness);
-        
-        // Apply theme tint
-        glassColor = mix(glassColor, u_tint.rgb, u_tint.a);
-        
-        // LCh color space correction: boost L and C near edges to prevent gloomy gray zones
-        vec3 glassLCh = srgb2lch(glassColor);
-        float edgeVal = 1.0 - t; // 0.0 at center, 1.0 at edge
-        glassLCh.x += 18.0 * edgeVal * u_specularStrength;
-        glassLCh.y += 10.0 * edgeVal * u_specularStrength;
-        glassLCh.x = clamp(glassLCh.x, 0.0, 100.0);
-        glassColor = lch2srgb(glassLCh);
-        
-        // Specular & Caustics setup
-        vec3 viewDir = vec3(0.0, 0.0, 1.0);
-        
-        // Static overhead lighting
-        vec3 light1Dir = normalize(vec3(-0.3, 0.6, 1.0));
-        vec3 half1Dir = normalize(light1Dir + viewDir);
-        float NdotH1 = max(dot(N, half1Dir), 0.0);
-        float spec1 = pow(NdotH1, 75.0) * 1.5;
-        
-        // Soft overhead ambient light
-        vec3 light2Dir = normalize(vec3(0.4, 0.7, 1.0));
-        vec3 half2Dir = normalize(light2Dir + viewDir);
-        float NdotH2 = max(dot(N, half2Dir), 0.0);
-        float spec2 = pow(NdotH2, 40.0) * 0.3;
-        
-        vec3 specularColor = vec3(1.0) * (spec1 * 1.2 + spec2) * u_specularStrength * edgeVal;
-        
-        // Fresnel Sheen (Schlick's approximation)
-        float cosTheta = max(dot(N, viewDir), 0.0);
-        float fresnel = pow(1.0 - cosTheta, 4.0) * 0.38 * edgeVal;
-        vec3 sheenColor = vec3(1.0) * fresnel;
-        
-        // Dynamic Caustics
-        float bandShape = pow(edgeVal * (1.0 - edgeVal * 0.5), 0.65);
-        float rawAlignment = dot(light1Dir.xy, -normal2D);
-        float focusAlignment = max(rawAlignment, 0.0);
-        float caustics = bandShape * focusAlignment * u_causticStrength * 1.8;
-        
-        // Rainbow caustics
-        vec3 causticsColor = vec3(0.85, 1.0, 0.95) * caustics;
-        causticsColor.r *= 1.0 + 0.15 * rawAlignment;
-        causticsColor.b *= 1.0 - 0.15 * rawAlignment;
-        
-        // Top-Left Inner Bevel Stroke
-        float borderWidth = 1.8 * u_dpr;
-        float innerStroke = smoothstep(-borderWidth - 1.0, -borderWidth, -dC) * (1.0 - smoothstep(-1.0, 0.0, -dC));
-        float topBias = max(dot(normal2D, normalize(vec2(-0.5, 0.85))), 0.0);
-        vec3 strokeColor = vec3(1.0) * innerStroke * topBias * 0.65;
-        
-        // Final pixel composite
-        vec3 finalColor = glassColor + specularColor + sheenColor + causticsColor + strokeColor;
-        
-        // Smooth shape edge anti-aliasing with transparent background
-        float edgeAlpha = 1.0 - smoothstep(-1.5, 0.0, -dC);
-        fragColor = vec4(finalColor, edgeAlpha);
+        // Edge-weighted blur mix
+        float edgeMix = (1.0 - edge * 0.15);
+        vec3 col = mix(sharp, blur, edgeMix);
+
+        // ------ Brightness ------
+        col *= 1.0 + u_brightness;
+
+        // ------ Saturation ------
+        float lum = dot(col, vec3(0.299, 0.587, 0.114));
+        col = mix(vec3(lum), col, 1.0 + u_sat);
+
+        // ------ Glass Tint (Theme Aware) ------
+        col = mix(col, u_tint.rgb, u_tint.a);
+        col *= 1.0 + 0.06 * depth;
+
+        // ------ Fresnel ------
+        float fres = pow(1.0 - abs(N.z), 4.0) * u_fresnel;
+
+        // ------ Specular highlights (multi-light Blinn-Phong) ------
+        vec3 V = vec3(0.0, 0.0, 1.0);
+        vec3 L1 = normalize(vec3(0.4, 0.7, 1.0));
+        vec3 H1 = normalize(L1 + V);
+        float sp1 = pow(max(dot(N, H1), 0.0), 90.0);
+        vec3 L2 = normalize(vec3(-0.3, -0.5, 1.0));
+        vec3 H2 = normalize(L2 + V);
+        float sp2 = pow(max(dot(N, H2), 0.0), 50.0) * 0.3;
+        vec3 L3 = normalize(vec3(0.1, 0.3, 1.0));
+        float spB = pow(max(dot(N, L3), 0.0), 6.0) * 0.1;
+        vec3 L4 = normalize(vec3(0.0, 0.9, 0.4));
+        vec3 H4 = normalize(L4 + V);
+        float sp4 = pow(max(dot(N, H4), 0.0), 120.0) * 0.6;
+        float totalSpec = (sp1 + sp2 + spB + sp4) * u_spec;
+
+        // ------ Inner border / stroke highlight ------
+        float borderWidth = 1.5;
+        float innerStroke = smoothstep(-borderWidth - 1.0, -borderWidth, sdf)
+                          * (1.0 - smoothstep(-1.0, 0.0, sdf));
+        float topBias = 0.5 + 0.5 * (-(px.y - u_center.y) / half_.y);
+        innerStroke *= (0.4 + 0.6 * topBias);
+
+        // ------ Edge highlight & inner glow ------
+        float rim = edge * u_edgeHL * 0.22;
+        float innerGlow = smoothstep(5.0, 0.0, -sdf) * u_edgeHL * 0.15;
+
+        // ------ Environment-like reflection (fake) ------
+        float envRefl = (N.y * 0.5 + 0.5) * fres * 0.08;
+
+        // ------ Composite ------
+        vec3 fin = col;
+        fin += vec3(totalSpec);
+        fin += vec3(rim + innerGlow);
+        fin += vec3(innerStroke * u_edgeHL * 0.55);
+        fin += vec3(envRefl);
+        fin = mix(fin, vec3(1.0), fres * 0.2);
+
+        vec3 bgColor = texture(u_bgTex, v_texCoord).rgb;
+        fragColor = vec4(mix(bgColor, fin, mask * u_alpha), 1.0);
       }
     `;
 
@@ -901,73 +813,87 @@ function initWebGL(canvas) {
     gl.enableVertexAttribArray(posAttr);
     gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
 
-    imageLocation = gl.getUniformLocation(glProgram, "u_image");
+    bgTexLocation = gl.getUniformLocation(glProgram, "u_bgTex");
+    blurTexLocation = gl.getUniformLocation(glProgram, "u_blurTex");
     resolutionLocation = gl.getUniformLocation(glProgram, "u_resolution");
     centerLocation = gl.getUniformLocation(glProgram, "u_center");
-    halfSizeLocation = gl.getUniformLocation(glProgram, "u_halfSize");
-    cornerLocation = gl.getUniformLocation(glProgram, "u_corner");
-    bandLocation = gl.getUniformLocation(glProgram, "u_band");
-    strengthLocation = gl.getUniformLocation(glProgram, "u_strength");
-    magnifyLocation = gl.getUniformLocation(glProgram, "u_magnify");
+    sizeLocation = gl.getUniformLocation(glProgram, "u_size");
+    radiusLocation = gl.getUniformLocation(glProgram, "u_radius");
+    refractLocation = gl.getUniformLocation(glProgram, "u_refract");
     chromaLocation = gl.getUniformLocation(glProgram, "u_chroma");
-    
-    // WebGL 2 Premium uniforms
-    squircleNLocation = gl.getUniformLocation(glProgram, "u_squircleN");
-    specularLocation = gl.getUniformLocation(glProgram, "u_specularStrength");
-    frostLocation = gl.getUniformLocation(glProgram, "u_frost");
-    beerThicknessLocation = gl.getUniformLocation(glProgram, "u_beerThickness");
-    causticStrengthLocation = gl.getUniformLocation(glProgram, "u_causticStrength");
-    mouseLocation = gl.getUniformLocation(glProgram, "u_mouse");
-    dprLocation = gl.getUniformLocation(glProgram, "u_dpr");
+    edgeHLLocation = gl.getUniformLocation(glProgram, "u_edgeHL");
+    specLocation = gl.getUniformLocation(glProgram, "u_spec");
+    fresnelLocation = gl.getUniformLocation(glProgram, "u_fresnel");
+    distortLocation = gl.getUniformLocation(glProgram, "u_distort");
+    alphaLocation = gl.getUniformLocation(glProgram, "u_alpha");
+    satLocation = gl.getUniformLocation(glProgram, "u_sat");
     tintLocation = gl.getUniformLocation(glProgram, "u_tint");
+    zRadiusLocation = gl.getUniformLocation(glProgram, "u_zRadius");
+    brightnessLocation = gl.getUniformLocation(glProgram, "u_brightness");
+    shadowAlphaLocation = gl.getUniformLocation(glProgram, "u_shadowAlpha");
+    shadowSpreadLocation = gl.getUniformLocation(glProgram, "u_shadowSpread");
+    shadowOffYLocation = gl.getUniformLocation(glProgram, "u_shadowOffY");
+    bevelModeLocation = gl.getUniformLocation(glProgram, "u_bevelMode");
 
-    // Height Field & Snell Refraction uniforms
-    thicknessLocation = gl.getUniformLocation(glProgram, "u_thickness");
-    domeHeightLocation = gl.getUniformLocation(glProgram, "u_domeHeight");
-    iorLocation = gl.getUniformLocation(glProgram, "u_ior");
-    bgDistLocation = gl.getUniformLocation(glProgram, "u_bgDist");
-
-    textureImage = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, textureImage);
+    bgTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, bgTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-    canvas.style.filter = "blur(var(--canvas-blur, 2px)) saturate(150%) brightness(0.92)";
+    blurTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, blurTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    canvas.style.filter = "none";
 
     // Pre-warm WebGL: render a blank frame to warm up shader compilation and GPU pipeline
     try {
       gl.viewport(0, 0, 10, 10);
-      const dummyTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, dummyTex);
+      const dummyTex1 = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex1);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+
+      const dummyTex2 = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex2);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+
       gl.useProgram(glProgram);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, dummyTex);
-      gl.uniform1i(imageLocation, 0);
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex1);
+      gl.uniform1i(bgTexLocation, 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, dummyTex2);
+      gl.uniform1i(blurTexLocation, 1);
+
       gl.uniform2f(resolutionLocation, 10, 10);
       gl.uniform2f(centerLocation, 5, 5);
-      gl.uniform2f(halfSizeLocation, 5, 5);
-      gl.uniform1f(cornerLocation, 2);
-      gl.uniform1f(bandLocation, 2);
-      gl.uniform1f(strengthLocation, 0);
-      gl.uniform1f(magnifyLocation, 0);
+      gl.uniform2f(sizeLocation, 10, 10);
+      gl.uniform1f(radiusLocation, 2);
+      gl.uniform1f(refractLocation, 0);
       gl.uniform1f(chromaLocation, 0);
-      gl.uniform1f(squircleNLocation, 4.0);
-      gl.uniform1f(specularLocation, 0);
-      gl.uniform1f(frostLocation, 0);
-      gl.uniform1f(beerThicknessLocation, 0);
-      gl.uniform1f(causticStrengthLocation, 0);
-      gl.uniform1f(dprLocation, 1.0);
+      gl.uniform1f(edgeHLLocation, 0);
+      gl.uniform1f(specLocation, 0);
+      gl.uniform1f(fresnelLocation, 0);
+      gl.uniform1f(distortLocation, 0);
+      gl.uniform1f(alphaLocation, 1.0);
+      gl.uniform1f(satLocation, 0);
       gl.uniform4f(tintLocation, 0, 0, 0, 0);
-      if (thicknessLocation) gl.uniform1f(thicknessLocation, 30.0);
-      if (domeHeightLocation) gl.uniform1f(domeHeightLocation, 6.0);
-      if (iorLocation) gl.uniform1f(iorLocation, 1.5);
-      if (bgDistLocation) gl.uniform1f(bgDistLocation, 40.0);
-      if (mouseLocation) gl.uniform2f(mouseLocation, 0, 0);
+      gl.uniform1f(zRadiusLocation, 5);
+      gl.uniform1f(brightnessLocation, 0);
+      gl.uniform1f(shadowAlphaLocation, 0);
+      gl.uniform1f(shadowSpreadLocation, 0);
+      gl.uniform1f(shadowOffYLocation, 0);
+      gl.uniform1f(bevelModeLocation, 0);
+
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.deleteTexture(dummyTex);
+      gl.deleteTexture(dummyTex1);
+      gl.deleteTexture(dummyTex2);
       console.log("[FromZero] WebGL context pre-warmed successfully");
     } catch (e) {
       console.warn("[FromZero] WebGL pre-warming failed:", e);
@@ -1016,50 +942,71 @@ async function pumpFrames() {
             gl.viewport(0, 0, w, h);
           }
 
-          gl.bindTexture(gl.TEXTURE_2D, textureImage);
+          // 1. Upload background texture (unit 0)
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, bgTexture);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(buf));
 
+          // 2. Perform downscaled blur on offscreen canvas
+          if (!offscreenCanvas) {
+            offscreenCanvas = document.createElement("canvas");
+            offscreenCtx = offscreenCanvas.getContext("2d");
+          }
+          if (offscreenCanvas.width !== w || offscreenCanvas.height !== h) {
+            offscreenCanvas.width = w;
+            offscreenCanvas.height = h;
+          }
+          const imgData = new ImageData(new Uint8ClampedArray(buf), w, h);
+          offscreenCtx.putImageData(imgData, 0, 0);
+
+          const scaleDown = 4;
+          const bw = Math.max(1, Math.floor(w / scaleDown));
+          const bh = Math.max(1, Math.floor(h / scaleDown));
+          if (!blurCanvas) {
+            blurCanvas = document.createElement("canvas");
+            blurCtx = blurCanvas.getContext("2d");
+          }
+          if (blurCanvas.width !== bw || blurCanvas.height !== bh) {
+            blurCanvas.width = bw;
+            blurCanvas.height = bh;
+          }
+
+          blurCtx.clearRect(0, 0, bw, bh);
+          const blurRadius = Math.max(0.5, glassSettings.glassBlur / scaleDown);
+          blurCtx.filter = `blur(${blurRadius}px)`;
+          blurCtx.drawImage(offscreenCanvas, 0, 0, w, h, 0, 0, bw, bh);
+
+          // 3. Upload blurred texture (unit 1)
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, blurTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, blurCanvas);
+
+          // 4. Bind Program & Set Uniforms
           gl.useProgram(glProgram);
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, textureImage);
-          gl.uniform1i(imageLocation, 0);
+          gl.uniform1i(bgTexLocation, 0);
+          gl.uniform1i(blurTexLocation, 1);
 
           const scale = w / 720.0;
-          const dpr = window.devicePixelRatio;
           gl.uniform2f(resolutionLocation, w, h);
           gl.uniform2f(centerLocation, 360.0 * scale, 265.0 * scale);
-          gl.uniform2f(halfSizeLocation, (320.0 - CORNER) * scale, (225.0 - CORNER) * scale);
-          gl.uniform1f(cornerLocation, CORNER * scale);
+          gl.uniform2f(sizeLocation, 640.0 * scale, 450.0 * scale);
+          gl.uniform1f(radiusLocation, glassSettings.cornerRadius * scale);
 
-          // u_band: bevel border size
-          const dynamicBand = (75.0 + glassSettings.glassBlur * 1.5) * scale;
-          gl.uniform1f(bandLocation, dynamicBand);
-
-          // u_strength: refraction strength
-          const dynamicStrength = (glassSettings.strength) * scale;
-          gl.uniform1f(strengthLocation, dynamicStrength);
-
-          gl.uniform1f(magnifyLocation, 0.015);
-          gl.uniform1f(chromaLocation, glassSettings.chroma);
-
-          // Bind WebGL 2 Premium uniforms
-          gl.uniform1f(squircleNLocation, glassSettings.squircleN);
-          gl.uniform1f(specularLocation, 0.45);
-          gl.uniform1f(frostLocation, glassSettings.frost);
-          gl.uniform1f(beerThicknessLocation, glassSettings.beer);
-          gl.uniform1f(causticStrengthLocation, glassSettings.caustic);
-          gl.uniform1f(dprLocation, dpr);
-
-          // Bind Height Field & Snell Refraction uniforms dynamically based on settings sliders
-          const thicknessVal = glassSettings.beer * 2.5; // Mapped: beer 10~24 -> thickness 25~60
-          const domeHeightVal = glassSettings.caustic * 10.0; // Mapped: caustic 0.4~1.2 -> domeHeight 4~12
-          const iorVal = 1.3 + glassSettings.chroma * 5.0; // Mapped: chroma 0.03~0.05 -> ior 1.45~1.55
-          const bgDistVal = glassSettings.strength * 1.3; // Mapped: strength 0~60 -> bgDist 0~78
-          
-          if (thicknessLocation) gl.uniform1f(thicknessLocation, thicknessVal * scale);
-          if (domeHeightLocation) gl.uniform1f(domeHeightLocation, domeHeightVal * scale);
-          if (iorLocation) gl.uniform1f(iorLocation, iorVal);
-          if (bgDistLocation) gl.uniform1f(bgDistLocation, bgDistVal * scale);
+          // u_refract: maps strength 0~60 to 0~1.5 (default 30 -> 0.75)
+          gl.uniform1f(refractLocation, glassSettings.strength / 40.0);
+          gl.uniform1f(chromaLocation, glassSettings.chroma); // default 0.045
+          gl.uniform1f(edgeHLLocation, glassSettings.edgeHl);
+          gl.uniform1f(specLocation, glassSettings.specular);
+          gl.uniform1f(fresnelLocation, glassSettings.fresnel);
+          gl.uniform1f(distortLocation, 0.0); // No micro-distortion
+          gl.uniform1f(alphaLocation, glassSettings.opacity);
+          gl.uniform1f(satLocation, 0.0); // Default saturation offset
+          gl.uniform1f(zRadiusLocation, glassSettings.zRadius * scale);
+          gl.uniform1f(brightnessLocation, 0.0); // Default brightness offset
+          gl.uniform1f(shadowAlphaLocation, glassSettings.shadowOpacity);
+          gl.uniform1f(shadowSpreadLocation, glassSettings.shadowSpread * scale);
+          gl.uniform1f(shadowOffYLocation, 8.0 * scale); // Drop shadow Y offset
+          gl.uniform1f(bevelModeLocation, 0.0); // Biconvex mode
 
           const isDark = !document.documentElement.hasAttribute('data-theme') ||
                          document.documentElement.getAttribute('data-theme') === 'dark';
@@ -1068,13 +1015,6 @@ async function pumpFrames() {
             gl.uniform4f(tintLocation, 18/255, 18/255, 24/255, tintOpacity);
           } else {
             gl.uniform4f(tintLocation, 240/255, 240/255, 245/255, tintOpacity);
-          }
-
-          // Convert mouse coordinate relative to centered canvas
-          if (mouseLocation) {
-            const mx = (currentMouseX - 320) * dpr * scale;
-            const my = (currentMouseY - 225) * dpr * scale;
-            gl.uniform2f(mouseLocation, mx, my);
           }
 
           gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1139,6 +1079,16 @@ window.addEventListener("DOMContentLoaded", async () => {
       glassSettings.searchHeight = settings.glass_settings.search_height ?? glassSettings.searchHeight;
       glassSettings.searchOffset = settings.glass_settings.search_offset ?? glassSettings.searchOffset;
       glassSettings.resultsHeight = settings.glass_settings.results_height ?? glassSettings.resultsHeight;
+      
+      // Load new Liquid Glass properties
+      glassSettings.edgeHl = settings.glass_settings.edge_hl ?? glassSettings.edgeHl;
+      glassSettings.specular = settings.glass_settings.specular ?? glassSettings.specular;
+      glassSettings.fresnel = settings.glass_settings.fresnel ?? glassSettings.fresnel;
+      glassSettings.cornerRadius = settings.glass_settings.corner_radius ?? glassSettings.cornerRadius;
+      glassSettings.zRadius = settings.glass_settings.z_radius ?? glassSettings.zRadius;
+      glassSettings.opacity = settings.glass_settings.opacity ?? glassSettings.opacity;
+      glassSettings.shadowOpacity = settings.glass_settings.shadow_opacity ?? glassSettings.shadowOpacity;
+      glassSettings.shadowSpread = settings.glass_settings.shadow_spread ?? glassSettings.shadowSpread;
     }
     applyVisualSettings(glassSettings);
     // Set initial DWM Acrylic state based on glassBlur slider
@@ -1796,17 +1746,27 @@ async function saveSettingsConfig() {
   // Glass settings are saved as part of the unified settings object
   settings.glass_settings = {
     glass_blur: glassSettings.glassBlur,
-    border_opacity: glassSettings.borderOpacity,
     glass_fps: glassSettings.glassFps,
     strength: glassSettings.strength,
-    chroma: glassSettings.chroma,
-    frost: glassSettings.frost,
-    beer: glassSettings.beer,
-    caustic: glassSettings.caustic,
+    edge_hl: glassSettings.edgeHl,
+    specular: glassSettings.specular,
+    fresnel: glassSettings.fresnel,
+    corner_radius: glassSettings.cornerRadius,
+    z_radius: glassSettings.zRadius,
+    opacity: glassSettings.opacity,
+    shadow_opacity: glassSettings.shadowOpacity,
+    shadow_spread: glassSettings.shadowSpread,
     squircle_n: glassSettings.squircleN,
     search_height: glassSettings.searchHeight,
     search_offset: glassSettings.searchOffset,
-    results_height: glassSettings.resultsHeight
+    results_height: glassSettings.resultsHeight,
+    
+    // Maintain deprecated fields for backward compatibility
+    border_opacity: glassSettings.borderOpacity,
+    chroma: glassSettings.chroma,
+    frost: glassSettings.frost,
+    beer: glassSettings.beer,
+    caustic: glassSettings.caustic
   };
 
   // Clean backup so closeSettings does not revert them
