@@ -2736,6 +2736,9 @@ function getFileIcon(item) {
   if (item.is_dir) return "📁";
   const ext = (item.extension || "").toLowerCase();
   if (IMAGE_EXTS.has(ext)) return "🖼️";
+  if (ext === "pptx" || ext === "pptm" || ext === "ppt") return "📊";
+  if (ext === "docx" || ext === "docm" || ext === "doc") return "📝";
+  if (ext === "xlsx" || ext === "xlsm" || ext === "xls") return "📈";
   if (DOC_EXTS.has(ext)) return "📝";
   if (CODE_EXTS.has(ext)) return "💻";
   if (ARCHIVE_EXTS.has(ext)) return "📦";
@@ -2828,8 +2831,13 @@ function renderPreviewBody(previewContent, item, preview) {
     video.preload = "metadata";
     video.className = "preview-video";
     previewContent.appendChild(video);
-  } else if (preview.file_type === "text" && preview.content) {
+  } else if (
+    (preview.file_type === "text" || preview.file_type === "office") &&
+    preview.content
+  ) {
     const pre = document.createElement("pre");
+    pre.className =
+      preview.file_type === "office" ? "preview-office" : "preview-text";
     pre.textContent = preview.content;
     previewContent.appendChild(pre);
   } else if (preview.file_type === "folder") {
@@ -2855,6 +2863,7 @@ function renderPreviewBody(previewContent, item, preview) {
       pdf: "PDF 过大，无法预览",
       audio: "音频过大，无法预览",
       video: "视频过大，无法预览",
+      office: "Office 文档无法预览（仅支持 pptx/docx/xlsx）",
     };
     appendPreviewEmpty(
       previewContent,

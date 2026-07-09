@@ -957,6 +957,52 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 size,
                 modified,
             })
+        } else if ext == "pptx" || ext == "pptm" {
+            // Extract slide text from OOXML package (ZIP); legacy .ppt is binary and unsupported
+            match crate::office_preview::preview_pptx(&file_path) {
+                Ok(content) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content,
+                    size,
+                    modified,
+                }),
+                Err(e) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content: format!("无法预览 PPTX: {}", e),
+                    size,
+                    modified,
+                }),
+            }
+        } else if ext == "docx" || ext == "docm" {
+            match crate::office_preview::preview_docx(&file_path) {
+                Ok(content) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content,
+                    size,
+                    modified,
+                }),
+                Err(e) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content: format!("无法预览 DOCX: {}", e),
+                    size,
+                    modified,
+                }),
+            }
+        } else if ext == "xlsx" || ext == "xlsm" {
+            match crate::office_preview::preview_xlsx(&file_path) {
+                Ok(content) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content,
+                    size,
+                    modified,
+                }),
+                Err(e) => Ok(FilePreview {
+                    file_type: "office".to_string(),
+                    content: format!("无法预览 XLSX: {}", e),
+                    size,
+                    modified,
+                }),
+            }
         } else if text_exts.contains(&ext.as_str()) {
             use std::io::Read;
             let file =

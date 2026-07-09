@@ -499,6 +499,15 @@ body {
     max-height: 240px;
 }
 
+/* Office (PPTX/DOCX/XLSX) text extraction preview */
+.preview-content pre.preview-office {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-word;
+    max-height: 260px;
+}
+
 .preview-content .folder-list {
     list-style: none;
     padding: 0;
