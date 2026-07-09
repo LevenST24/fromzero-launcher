@@ -1,18 +1,22 @@
 //! List archive contents for the preview panel (no full extract).
+//!
+//! ZIP/7z only need the central directory / header — multi‑GB packs are fine.
+//! We never decompress member payloads for preview.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-// Read is used by File::read_exact in preview_tar
-
-const MAX_ARCHIVE_SIZE: u64 = 200 * 1024 * 1024;
-const MAX_ENTRIES_LIST: usize = 40;
+/// How many member paths to show in the panel (not a size limit on the archive).
+const MAX_ENTRIES_LIST: usize = 60;
+/// TAR must walk headers sequentially; stop after this many headers so huge
+/// tarballs don't freeze the UI (we still show "at least N items").
+const MAX_TAR_SCAN: usize = 500;
 
 fn format_size(bytes: u64) -> String {
     if bytes == 0 {
         return "—".to_string();
     }
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut i = 0;
     while size >= 1024.0 && i < UNITS.len() - 1 {
@@ -28,11 +32,23 @@ fn format_size(bytes: u64) -> String {
 
 fn format_listing(
     kind_label: &str,
+    archive_bytes: u64,
     total: usize,
+    total_is_exact: bool,
     entries: &[(bool, String, u64)],
 ) -> String {
     let mut out = String::new();
-    out.push_str(&format!("📦 {} · 共 {} 项\n\n", kind_label, total));
+    let count_label = if total_is_exact {
+        format!("共 {} 项", total)
+    } else {
+        format!("至少 {} 项", total)
+    };
+    out.push_str(&format!(
+        "📦 {} · {} · 包体积 {}\n\n",
+        kind_label,
+        count_label,
+        format_size(archive_bytes)
+    ));
     for (is_dir, name, size) in entries {
         let icon = if *is_dir { "📁" } else { "📄" };
         if *is_dir {
@@ -41,8 +57,13 @@ fn format_listing(
             out.push_str(&format!("{} {}  ({})\n", icon, name, format_size(*size)));
         }
     }
-    if total > entries.len() {
-        out.push_str(&format!("\n… 另有 {} 项未显示", total - entries.len()));
+    if total > entries.len() || !total_is_exact {
+        let more = total.saturating_sub(entries.len());
+        if more > 0 {
+            out.push_str(&format!("\n… 另有 {} 项未显示", more));
+        } else if !total_is_exact {
+            out.push_str("\n… 条目过多，仅展示部分");
+        }
     }
     out.trim_end().to_string()
 }
@@ -50,24 +71,21 @@ fn format_listing(
 /// ZIP / JAR / APK / EPUB / (etc.) listing via the `zip` crate.
 pub fn preview_zip(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("无法读取元数据: {}", e))?;
-    if meta.len() > MAX_ARCHIVE_SIZE {
-        return Err("压缩包过大，无法预览".to_string());
-    }
+    let archive_bytes = meta.len();
     let file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
+    // ZipArchive reads the end-of-central-directory; it does not load all payloads.
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("无法读取 ZIP: {}", e))?;
 
     let total = archive.len();
     let mut entries: Vec<(bool, String, u64)> = Vec::new();
-    for i in 0..total {
-        if entries.len() >= MAX_ENTRIES_LIST {
-            break;
-        }
+    // Prefer a stable sample: first MAX_ENTRIES_LIST entries by index, then sort for display
+    let take_n = total.min(MAX_ENTRIES_LIST);
+    for i in 0..take_n {
         let Ok(f) = archive.by_index(i) else {
             continue;
         };
         let name = f.name().replace('\\', "/");
-        // Skip pure directory markers that are empty trailing slash only when already counted
         let is_dir = f.is_dir() || name.ends_with('/');
         let size = f.size();
         let display = name.trim_end_matches('/').to_string();
@@ -77,23 +95,33 @@ pub fn preview_zip(path: &Path) -> Result<String, String> {
         entries.push((is_dir, display, size));
     }
 
-    // Prefer directories first, then by name
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
 
-    Ok(format_listing("ZIP 压缩包", total, &entries))
+    Ok(format_listing(
+        "ZIP 压缩包",
+        archive_bytes,
+        total,
+        true,
+        &entries,
+    ))
 }
 
-/// 7z archive listing via sevenz-rust2 (header only, no file extract).
+/// 7z archive listing via sevenz-rust2 (header/metadata only, no member extract).
 pub fn preview_7z(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("无法读取元数据: {}", e))?;
-    if meta.len() > MAX_ARCHIVE_SIZE {
-        return Err("压缩包过大，无法预览".to_string());
-    }
+    let archive_bytes = meta.len();
 
     use sevenz_rust2::{ArchiveReader, Password};
 
-    let reader = ArchiveReader::open(path, Password::empty())
-        .map_err(|e| format!("无法读取 7z: {}（若已加密需先用 7-Zip 打开）", e))?;
+    // Opens and parses the 7z header; solid multi‑GB archives are OK for listing.
+    let reader = ArchiveReader::open(path, Password::empty()).map_err(|e| {
+        let msg = e.to_string();
+        if msg.to_lowercase().contains("password") || msg.to_lowercase().contains("encrypt") {
+            format!("无法读取 7z（可能已加密）: {}", msg)
+        } else {
+            format!("无法读取 7z: {}", msg)
+        }
+    })?;
 
     let files = &reader.archive().files;
     let total = files.len();
@@ -111,7 +139,13 @@ pub fn preview_7z(path: &Path) -> Result<String, String> {
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     let shown: Vec<_> = entries.into_iter().take(MAX_ENTRIES_LIST).collect();
 
-    Ok(format_listing("7z 压缩包", total, &shown))
+    Ok(format_listing(
+        "7z 压缩包",
+        archive_bytes,
+        total,
+        true,
+        &shown,
+    ))
 }
 
 /// Gzip single-file: show compressed size + tip (no multi-member listing).
@@ -128,28 +162,31 @@ pub fn preview_gzip_hint(path: &Path, size: u64) -> String {
 }
 
 /// Best-effort TAR listing (uncompressed .tar only).
+/// Sequential scan; capped at MAX_TAR_SCAN headers so multi‑GB tars stay responsive.
 pub fn preview_tar(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("无法读取元数据: {}", e))?;
-    if meta.len() > MAX_ARCHIVE_SIZE {
-        return Err("压缩包过大，无法预览".to_string());
-    }
+    let archive_bytes = meta.len();
 
     // Minimal USTAR tar listing without extra crate:
     // 512-byte headers, name at 0..100, size octal at 124..136, typeflag at 156.
     let mut file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
     let mut entries: Vec<(bool, String, u64)> = Vec::new();
     let mut total = 0usize;
+    let mut truncated_scan = false;
     let mut header = [0u8; 512];
 
     loop {
+        if total >= MAX_TAR_SCAN {
+            truncated_scan = true;
+            break;
+        }
         if file.read_exact(&mut header).is_err() {
             break;
         }
-        // End of archive: two zero blocks
+        // End of archive: zero block
         if header.iter().all(|&b| b == 0) {
             break;
         }
-        // Basic checksum sanity (optional soft check)
         let name_raw = &header[0..100];
         let name_end = name_raw.iter().position(|&b| b == 0).unwrap_or(100);
         let name = String::from_utf8_lossy(&name_raw[..name_end])
@@ -183,5 +220,11 @@ pub fn preview_tar(path: &Path) -> Result<String, String> {
         return Err("无法解析 TAR（可能是损坏或非标准格式）".to_string());
     }
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
-    Ok(format_listing("TAR 归档", total, &entries))
+    Ok(format_listing(
+        "TAR 归档",
+        archive_bytes,
+        total,
+        !truncated_scan,
+        &entries,
+    ))
 }
