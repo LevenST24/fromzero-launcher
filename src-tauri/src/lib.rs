@@ -2,7 +2,7 @@ mod capture;
 mod commands;
 mod dwm;
 mod indexer;
-mod office_preview;
+mod preview;
 mod settings;
 
 use crate::commands::AppState;

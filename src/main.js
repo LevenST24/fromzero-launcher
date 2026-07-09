@@ -2773,103 +2773,118 @@ function assetSrcForPath(filePath) {
   }
 }
 
-function renderPreviewBody(previewContent, item, preview) {
-  clearChildren(previewContent);
-  const useAsset = preview.content === "asset";
-  const filePath = item.data.path;
-
-  if (preview.file_type === "image" && useAsset) {
-    const src = assetSrcForPath(filePath);
-    if (!src) {
-      appendPreviewEmpty(previewContent, "图片路径无效");
+/**
+ * Frontend preview renderers keyed by backend `file_type`.
+ * Asset media: content === "asset" → convertFileSrc(path).
+ * Structured text: content is UTF-8 body (office / archive / text / folder lines).
+ */
+const PREVIEW_RENDERERS = {
+  image(el, item, preview) {
+    if (preview.content !== "asset") {
+      appendPreviewEmpty(el, "图片过大，无法预览");
       return;
     }
+    const src = assetSrcForPath(item.data.path);
+    if (!src) return appendPreviewEmpty(el, "图片路径无效");
     const img = document.createElement("img");
     img.src = src;
     img.alt = item.data.name || "";
     img.loading = "lazy";
     img.decoding = "async";
     img.onerror = () => {
-      clearChildren(previewContent);
-      appendPreviewEmpty(previewContent, "图片加载失败");
+      clearChildren(el);
+      appendPreviewEmpty(el, "图片加载失败");
     };
-    previewContent.appendChild(img);
-  } else if (preview.file_type === "pdf" && useAsset) {
-    const src = assetSrcForPath(filePath);
-    if (!src) {
-      appendPreviewEmpty(previewContent, "PDF 路径无效");
+    el.appendChild(img);
+  },
+  pdf(el, item, preview) {
+    if (preview.content !== "asset") {
+      appendPreviewEmpty(el, "PDF 过大，无法预览");
       return;
     }
+    const src = assetSrcForPath(item.data.path);
+    if (!src) return appendPreviewEmpty(el, "PDF 路径无效");
     const iframe = document.createElement("iframe");
     iframe.src = src;
     iframe.title = item.data.name || "PDF";
     iframe.className = "preview-pdf";
     iframe.setAttribute("sandbox", "allow-same-origin allow-scripts");
-    previewContent.appendChild(iframe);
-  } else if (preview.file_type === "audio" && useAsset) {
-    const src = assetSrcForPath(filePath);
-    if (!src) {
-      appendPreviewEmpty(previewContent, "音频路径无效");
+    el.appendChild(iframe);
+  },
+  audio(el, item, preview) {
+    if (preview.content !== "asset") {
+      appendPreviewEmpty(el, "音频过大，无法预览");
       return;
     }
+    const src = assetSrcForPath(item.data.path);
+    if (!src) return appendPreviewEmpty(el, "音频路径无效");
     const audio = document.createElement("audio");
     audio.src = src;
     audio.controls = true;
     audio.preload = "metadata";
     audio.setAttribute("controlsList", "nodownload");
     audio.className = "preview-audio";
-    previewContent.appendChild(audio);
-  } else if (preview.file_type === "video" && useAsset) {
-    const src = assetSrcForPath(filePath);
-    if (!src) {
-      appendPreviewEmpty(previewContent, "视频路径无效");
+    el.appendChild(audio);
+  },
+  video(el, item, preview) {
+    if (preview.content !== "asset") {
+      appendPreviewEmpty(el, "视频过大，无法预览");
       return;
     }
+    const src = assetSrcForPath(item.data.path);
+    if (!src) return appendPreviewEmpty(el, "视频路径无效");
     const video = document.createElement("video");
     video.src = src;
     video.controls = true;
     video.preload = "metadata";
     video.className = "preview-video";
-    previewContent.appendChild(video);
-  } else if (
-    (preview.file_type === "text" || preview.file_type === "office") &&
-    preview.content
-  ) {
+    el.appendChild(video);
+  },
+  text(el, _item, preview) {
+    if (!preview.content) return appendPreviewEmpty(el, "无文本内容");
     const pre = document.createElement("pre");
-    pre.className =
-      preview.file_type === "office" ? "preview-office" : "preview-text";
+    pre.className = "preview-text";
     pre.textContent = preview.content;
-    previewContent.appendChild(pre);
-  } else if (preview.file_type === "folder") {
+    el.appendChild(pre);
+  },
+  office(el, _item, preview) {
+    if (!preview.content) return appendPreviewEmpty(el, "无法提取文档内容");
+    const pre = document.createElement("pre");
+    pre.className = "preview-office";
+    pre.textContent = preview.content;
+    el.appendChild(pre);
+  },
+  archive(el, _item, preview) {
+    if (!preview.content) return appendPreviewEmpty(el, "无法读取压缩包");
+    const pre = document.createElement("pre");
+    pre.className = "preview-archive";
+    pre.textContent = preview.content;
+    el.appendChild(pre);
+  },
+  folder(el, _item, preview) {
     const ul = document.createElement("ul");
     ul.className = "folder-list";
     if (preview.content) {
       preview.content.split("\n").forEach((line) => {
-        if (line.trim()) {
-          const li = document.createElement("li");
-          li.textContent = line;
-          ul.appendChild(li);
-        }
+        if (!line.trim()) return;
+        const li = document.createElement("li");
+        li.textContent = line;
+        ul.appendChild(li);
       });
     }
-    if (!ul.childElementCount) {
-      appendPreviewEmpty(previewContent, "空文件夹");
-      return;
-    }
-    previewContent.appendChild(ul);
-  } else {
-    const tooLargeMsg = {
-      image: "图片过大，无法预览",
-      pdf: "PDF 过大，无法预览",
-      audio: "音频过大，无法预览",
-      video: "视频过大，无法预览",
-      office: "Office 文档无法预览（仅支持 pptx/docx/xlsx）",
-    };
-    appendPreviewEmpty(
-      previewContent,
-      tooLargeMsg[preview.file_type] || "不可直接预览",
-    );
-  }
+    if (!ul.childElementCount) return appendPreviewEmpty(el, "空文件夹");
+    el.appendChild(ul);
+  },
+  binary(el) {
+    appendPreviewEmpty(el, "不可直接预览");
+  },
+};
+
+function renderPreviewBody(previewContent, item, preview) {
+  clearChildren(previewContent);
+  const renderer =
+    PREVIEW_RENDERERS[preview.file_type] || PREVIEW_RENDERERS.binary;
+  renderer(previewContent, item, preview);
 }
 
 async function showPreview(item) {

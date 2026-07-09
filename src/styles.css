@@ -508,6 +508,15 @@ body {
     max-height: 260px;
 }
 
+/* Archive listing (7z / zip / tar) */
+.preview-content pre.preview-archive {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1.45;
+    word-break: break-all;
+    max-height: 260px;
+}
+
 .preview-content .folder-list {
     list-style: none;
     padding: 0;
