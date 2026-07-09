@@ -1085,7 +1085,6 @@ dependencies = [
 name = "fromzero-launcher"
 version = "0.2.4"
 dependencies = [
- "base64 0.22.1",
  "open",
  "pinyin",
  "serde",

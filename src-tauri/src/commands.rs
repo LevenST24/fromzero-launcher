@@ -238,23 +238,24 @@ pub fn search_apps(query: String, state: State<'_, AppState>) -> Vec<AppItem> {
 
     let mut scored_apps = Vec::new();
     for app in apps_cache.iter() {
+        // Pinyin fields are already lowercase ASCII (see indexer::get_pinyin).
+        // Only the display name needs lowercasing for case-insensitive match.
         let name_lower = app.name.to_lowercase();
-        let initials_lower = app.pinyin_initials.to_lowercase();
-        let full_lower = app.pinyin_full.to_lowercase();
-
-        let score = score_app(&query_lower, &name_lower, &initials_lower, &full_lower);
+        let score = score_app(
+            &query_lower,
+            &name_lower,
+            &app.pinyin_initials,
+            &app.pinyin_full,
+        );
 
         if score > 0 {
-            scored_apps.push((score, app.clone())); // Clone only matched items
+            scored_apps.push((score, name_lower, app.clone())); // Clone only matched items
         }
     }
 
-    // Sort by score (descending), then by name alphabetically as tiebreaker
-    scored_apps.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()))
-    });
-    scored_apps.into_iter().map(|(_, app)| app).collect()
+    // Sort by score (descending), then by precomputed lowercase name (no re-alloc)
+    scored_apps.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored_apps.into_iter().map(|(_, _, app)| app).collect()
 }
 
 #[tauri::command]
@@ -565,22 +566,17 @@ fn is_hidden_or_system(entry: &std::fs::DirEntry) -> bool {
     false
 }
 
-fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
-    let metadata = entry.metadata().ok()?;
-    // Skip symbolic links and junctions to prevent infinite recursion
-    if metadata.file_type().is_symlink() {
-        return None;
-    }
-    let name = entry.file_name().to_string_lossy().to_string();
-    let path = clean_path_str(entry.path().to_string_lossy().to_string());
+fn file_item_from_meta(
+    name: String,
+    path: std::path::PathBuf,
+    metadata: &std::fs::Metadata,
+) -> FileItem {
     let is_dir = metadata.is_dir();
     let size = if is_dir { 0 } else { metadata.len() };
     let extension = if is_dir {
         String::new()
     } else {
-        entry
-            .path()
-            .extension()
+        path.extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default()
     };
@@ -590,14 +586,37 @@ fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Some(FileItem {
+    FileItem {
         name,
-        path,
+        path: clean_path_str(path.to_string_lossy().to_string()),
         is_dir,
         size,
         extension,
         modified,
-    })
+    }
+}
+
+fn metadata_to_file_item(entry: &std::fs::DirEntry) -> Option<FileItem> {
+    let metadata = entry.metadata().ok()?;
+    // Skip symbolic links and junctions to prevent infinite recursion
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return None;
+        }
+    }
+    let name = entry.file_name().to_string_lossy().to_string();
+    Some(file_item_from_meta(name, entry.path(), &metadata))
+}
+
+/// Case-insensitive name key for sorting (allocates once per item).
+fn name_sort_key(name: &str) -> String {
+    name.to_lowercase()
 }
 
 /// Directories to skip during recursive file search
@@ -669,12 +688,8 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
             }
         }
 
-        // Sort: directories first, then alphabetically
-        items.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        // Sort: directories first, then alphabetically (lowercase keys precomputed once)
+        items.sort_by_cached_key(|item| (!item.is_dir, name_sort_key(&item.name)));
 
         // Limit to 50 results to prevent UI flooding
         items.truncate(50);
@@ -744,12 +759,8 @@ pub async fn search_files(query: String, is_inline: Option<bool>) -> Result<Vec<
             }
         }
 
-        // Sort: directories first, then by name
-        results.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        // Sort: directories first, then by name (lowercase keys precomputed once)
+        results.sort_by_cached_key(|item| (!item.is_dir, name_sort_key(&item.name)));
 
         Ok(results)
     })
@@ -803,37 +814,44 @@ fn search_recursive(
         }
 
         let name = entry.file_name().to_string_lossy().to_string();
+        let name_lower = name.to_lowercase();
+        let path = entry.path();
 
         if metadata.is_dir() {
             // Skip ignored directories
             if IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
                 continue;
             }
-            // Check if dir name matches
-            if name.to_lowercase().contains(query) {
-                if let Some(item) = metadata_to_file_item(&entry) {
-                    results.push(item);
-                }
+            // Reuse already-fetched metadata (avoid second stat via metadata_to_file_item)
+            if name_lower.contains(query) {
+                results.push(file_item_from_meta(name, path.clone(), &metadata));
             }
-            // Recurse into subdirectory
             search_recursive(
-                &entry.path(),
+                &path,
                 query,
                 results,
                 max_results,
                 max_depth,
                 current_depth + 1,
             );
-        } else {
-            // Check if file name matches
-            if name.to_lowercase().contains(query) {
-                if let Some(item) = metadata_to_file_item(&entry) {
-                    results.push(item);
-                }
-            }
+        } else if name_lower.contains(query) {
+            results.push(file_item_from_meta(name, path, &metadata));
         }
     }
 }
+
+/// Size caps for media previews served via asset protocol (frontend convertFileSrc).
+/// Media bytes are NOT loaded into memory — only metadata is returned for image/audio/pdf/video.
+const PREVIEW_MAX_IMAGE: u64 = 25 * 1024 * 1024;
+const PREVIEW_MAX_PDF: u64 = 40 * 1024 * 1024;
+const PREVIEW_MAX_AUDIO: u64 = 80 * 1024 * 1024;
+const PREVIEW_MAX_VIDEO: u64 = 100 * 1024 * 1024;
+const PREVIEW_TEXT_BYTES: u64 = 48 * 1024;
+const PREVIEW_TEXT_LINES: usize = 40;
+const PREVIEW_FOLDER_ITEMS: usize = 20;
+
+/// Marker in `content` when the frontend should load the file via asset protocol.
+const PREVIEW_ASSET_MARKER: &str = "asset";
 
 #[tauri::command]
 pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
@@ -859,13 +877,23 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        // content: text body / folder listing only.
+        // For image/audio/pdf/video the frontend loads via convertFileSrc(path)
+        // — no Base64 over IPC (avoids 33% bloat + multi-MB JSON).
+        // Empty content + known media file_type means "too large".
+        // content == "asset" means use asset protocol.
         if metadata.is_dir() {
-            // For folders: list first 10 items
             let mut items = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&file_path) {
-                for entry in entries.flatten().take(10) {
+                for entry in entries.flatten() {
+                    if items.len() >= PREVIEW_FOLDER_ITEMS {
+                        break;
+                    }
+                    if is_hidden_or_system(&entry) {
+                        continue;
+                    }
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                     items.push(format!("{} {}", if is_dir { "📁" } else { "📄" }, name));
                 }
             }
@@ -883,101 +911,80 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
             .unwrap_or_default();
 
         let image_exts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
-        let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
+        let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "opus"];
+        let video_exts = ["mp4", "webm", "ogv", "mov", "mkv", "avi"];
         let text_exts = [
-            "txt", "md", "json", "js", "ts", "rs", "css", "html", "py", "sh", "bat", "toml",
-            "yaml", "yml", "ini", "log", "conf", "cfg", "xml", "csv", "c", "cpp", "h", "hpp",
-            "java", "go", "rb", "php", "sql", "r",
+            "txt", "md", "markdown", "json", "js", "jsx", "ts", "tsx", "mjs", "cjs", "rs",
+            "css", "scss", "less", "html", "htm", "vue", "svelte", "py", "sh", "bash", "zsh",
+            "bat", "cmd", "ps1", "toml", "yaml", "yml", "ini", "log", "conf", "cfg", "xml",
+            "csv", "tsv", "c", "cpp", "cc", "h", "hpp", "java", "kt", "go", "rb", "php",
+            "sql", "r", "swift", "gitignore", "env", "dockerfile", "makefile",
         ];
 
-        if image_exts.contains(&ext.as_str()) {
-            // Image preview: encode as Base64 (max 10MB)
-            if size > 10 * 1024 * 1024 {
-                return Ok(FilePreview {
-                    file_type: "image".to_string(),
-                    content: String::new(),
-                    size,
-                    modified,
-                });
+        let media_ok = |max: u64| -> String {
+            if size > max {
+                String::new()
+            } else {
+                PREVIEW_ASSET_MARKER.to_string()
             }
-            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let mime = match ext.as_str() {
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                "bmp" => "image/bmp",
-                "ico" => "image/x-icon",
-                "svg" => "image/svg+xml",
-                _ => "application/octet-stream",
-            };
+        };
+
+        if image_exts.contains(&ext.as_str()) {
             Ok(FilePreview {
                 file_type: "image".to_string(),
-                content: format!("data:{};base64,{}", mime, encoded),
+                content: media_ok(PREVIEW_MAX_IMAGE),
                 size,
                 modified,
             })
         } else if ext == "pdf" {
-            // PDF preview: encode as Base64 (max 30MB)
-            if size > 30 * 1024 * 1024 {
-                return Ok(FilePreview {
-                    file_type: "pdf".to_string(),
-                    content: String::new(),
-                    size,
-                    modified,
-                });
-            }
-            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             Ok(FilePreview {
                 file_type: "pdf".to_string(),
-                content: format!("data:application/pdf;base64,{}", encoded),
+                content: media_ok(PREVIEW_MAX_PDF),
                 size,
                 modified,
             })
         } else if audio_exts.contains(&ext.as_str()) {
-            // Audio preview: encode as Base64 (max 50MB)
-            if size > 50 * 1024 * 1024 {
+            Ok(FilePreview {
+                file_type: "audio".to_string(),
+                content: media_ok(PREVIEW_MAX_AUDIO),
+                size,
+                modified,
+            })
+        } else if video_exts.contains(&ext.as_str()) {
+            Ok(FilePreview {
+                file_type: "video".to_string(),
+                content: media_ok(PREVIEW_MAX_VIDEO),
+                size,
+                modified,
+            })
+        } else if text_exts.contains(&ext.as_str()) {
+            use std::io::Read;
+            let file =
+                std::fs::File::open(&file_path).map_err(|e| format!("无法打开文件: {}", e))?;
+            let mut handle = file.take(PREVIEW_TEXT_BYTES);
+            let mut buffer = Vec::new();
+            handle
+                .read_to_end(&mut buffer)
+                .map_err(|e| format!("无法读取文件: {}", e))?;
+
+            // Reject binary-looking content (NUL in first chunk)
+            if buffer.iter().take(512).any(|&b| b == 0) {
                 return Ok(FilePreview {
-                    file_type: "audio".to_string(),
+                    file_type: "binary".to_string(),
                     content: String::new(),
                     size,
                     modified,
                 });
             }
-            let bytes = std::fs::read(&file_path).map_err(|e| format!("无法读取文件: {}", e))?;
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let mime = match ext.as_str() {
-                "mp3" => "audio/mpeg",
-                "wav" => "audio/wav",
-                "ogg" => "audio/ogg",
-                "flac" => "audio/flac",
-                "aac" => "audio/aac",
-                "m4a" => "audio/mp4",
-                _ => "audio/ogg",
-            };
-            Ok(FilePreview {
-                file_type: "audio".to_string(),
-                content: format!("data:{};base64,{}", mime, encoded),
-                size,
-                modified,
-            })
-        } else if text_exts.contains(&ext.as_str()) {
-            // Text preview: read at most 64KB to prevent OOM
-            use std::io::Read;
-            let file =
-                std::fs::File::open(&file_path).map_err(|e| format!("无法打开文件: {}", e))?;
-            let mut handle = file.take(64 * 1024);
-            let mut buffer = Vec::new();
-            handle
-                .read_to_end(&mut buffer)
-                .map_err(|e| format!("无法读取文件: {}", e))?;
+
             let text = String::from_utf8_lossy(&buffer);
-            let preview: String = text.lines().take(30).collect::<Vec<_>>().join("\n");
+            let lines: Vec<&str> = text.lines().take(PREVIEW_TEXT_LINES).collect();
+            let truncated =
+                text.lines().nth(PREVIEW_TEXT_LINES).is_some() || (size as usize) > buffer.len();
+            let mut preview = lines.join("\n");
+            if truncated {
+                preview.push_str("\n…");
+            }
             Ok(FilePreview {
                 file_type: "text".to_string(),
                 content: preview,
@@ -985,7 +992,6 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
                 modified,
             })
         } else {
-            // Binary/unknown: metadata only
             Ok(FilePreview {
                 file_type: "binary".to_string(),
                 content: String::new(),

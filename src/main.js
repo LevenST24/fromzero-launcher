@@ -139,10 +139,6 @@ let gl = null;
 let glProgram = null;
 let bgTexture = null;
 let blurTexture = null;
-let offscreenCanvas = null;
-let offscreenCtx = null;
-let blurCanvas = null;
-let blurCtx = null;
 let webglInitialized = false;
 let lastRenderedSeq = 0;
 
@@ -163,14 +159,6 @@ let blurTexA = null;
 let blurTexB = null;
 let blurFboW = 0;
 let blurFboH = 0;
-
-// Mouse tracking
-let currentMouseX = 320;
-let currentMouseY = 225;
-document.addEventListener("mousemove", (e) => {
-  currentMouseX = e.clientX;
-  currentMouseY = e.clientY;
-});
 
 // Uniform locations
 let bgTexLocation = null;
@@ -259,7 +247,7 @@ const SYSTEM_COMMANDS = [
   },
 ];
 
-const APP_VERSION = "v0.2.4";
+const APP_VERSION = "v0.2.5";
 
 // =============================================
 // Window Focus/Blur Management & State Machine
@@ -933,12 +921,6 @@ function syncSlidersToConfig(config) {
 // =============================================
 // Real-time Background Refraction Helpers
 // =============================================
-const WIN_W = 640;
-const WIN_H = 450;
-const PAD_X = 40;
-const PAD_Y = 40;
-const CORNER = 24.0;
-
 function compileShader(gl, source, type) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -1470,13 +1452,10 @@ async function pumpFrames(myToken) {
           );
 
           // 2. GPU two-pass separable Gaussian blur of the background.
-          // Replaces the old canvas-2D blur (downscale + CSS blur(), which
-          // produced anisotropic streaky "晕染"). A true Gaussian is isotropic
-          // and yields a clean frosted-glass blur. Done at half resolution for
-          // speed; the main shader samples it with normalized UVs so size is
-          // irrelevant. Falls back to using the sharp bg as "blur" if the blur
-          // program is unavailable.
-          const scaleDown = 1;
+          // Half-resolution blur (scaleDown=2): ~4× fewer texels, main shader
+          // samples with normalized UVs so size is irrelevant. Falls back to
+          // the sharp bg if the blur program is unavailable.
+          const scaleDown = 2;
           const bw = Math.max(1, Math.floor(w / scaleDown));
           const bh = Math.max(1, Math.floor(h / scaleDown));
           let blurResultTex = bgTexture;
@@ -2159,6 +2138,7 @@ async function handleSearch() {
 function renderResults() {
   if (!resultsList) return;
   clearChildren(resultsList);
+  lastRenderedSelectedIndex = -1;
   if (filteredItems.length === 0) {
     const emptyDiv = document.createElement("div");
     emptyDiv.className = "results-empty";
@@ -2166,6 +2146,8 @@ function renderResults() {
     resultsList.appendChild(emptyDiv);
     return;
   }
+  // Batch DOM inserts to avoid repeated reflows while building the list
+  const fragment = document.createDocumentFragment();
   filteredItems.forEach((item, index) => {
     const el = document.createElement("div");
     el.className = `result-item ${index === selectedIndex ? "selected" : ""}`;
@@ -2221,33 +2203,52 @@ function renderResults() {
       selectedIndex = index;
       updateSelectionVisual();
     });
-    resultsList.appendChild(el);
+    fragment.appendChild(el);
   });
+  resultsList.appendChild(fragment);
+  lastRenderedSelectedIndex = selectedIndex;
   const selectedEl = resultsList.children[selectedIndex];
   if (selectedEl) selectedEl.scrollIntoView({ block: "nearest" });
 }
 
+/** Tracks last selected DOM index to avoid O(n) classList thrash on hover */
+let lastRenderedSelectedIndex = -1;
+
 function updateSelectionVisual() {
   if (!resultsList) return;
   const items = resultsList.children;
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].classList && items[i].classList.contains("result-item")) {
-      if (i === selectedIndex) {
-        items[i].classList.add("selected");
-        items[i].scrollIntoView({ block: "nearest" });
-        if (
-          filteredItems[selectedIndex] &&
-          (filteredItems[selectedIndex].type === "file" ||
-            filteredItems[selectedIndex].type === "dir")
-        ) {
-          triggerPreview(filteredItems[selectedIndex]);
-        } else {
-          hidePreview();
-        }
-      } else {
-        items[i].classList.remove("selected");
-      }
-    }
+  const prev = lastRenderedSelectedIndex;
+  const next = selectedIndex;
+
+  if (
+    prev !== next &&
+    prev >= 0 &&
+    prev < items.length &&
+    items[prev].classList &&
+    items[prev].classList.contains("result-item")
+  ) {
+    items[prev].classList.remove("selected");
+  }
+
+  if (
+    next >= 0 &&
+    next < items.length &&
+    items[next].classList &&
+    items[next].classList.contains("result-item")
+  ) {
+    items[next].classList.add("selected");
+    items[next].scrollIntoView({ block: "nearest" });
+  }
+  lastRenderedSelectedIndex = next;
+
+  if (
+    filteredItems[selectedIndex] &&
+    (filteredItems[selectedIndex].type === "file" ||
+      filteredItems[selectedIndex].type === "dir")
+  ) {
+    triggerPreview(filteredItems[selectedIndex]);
+  } else {
+    hidePreview();
   }
 }
 
@@ -2642,10 +2643,17 @@ function recordShortcut(e) {
 }
 
 // =============================================
-// File Explorer: Helper Functions
+// File Explorer: Helper Functions & Preview
 // =============================================
 
-// Format file size to human-readable string
+/** Invalidate in-flight preview IPC when selection races */
+let previewRequestId = 0;
+/** Small LRU-ish cache: path -> FilePreview (metadata + text only, no media bytes) */
+const previewCache = new Map();
+const PREVIEW_CACHE_MAX = 48;
+/** Skip re-fetch if same path is already showing */
+let activePreviewPath = null;
+
 function formatFileSize(bytes) {
   if (bytes === 0) return "—";
   const units = ["B", "KB", "MB", "GB"];
@@ -2658,7 +2666,6 @@ function formatFileSize(bytes) {
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-// Format Unix timestamp to locale date string
 function formatDate(unixSec) {
   if (!unixSec) return "—";
   return new Date(unixSec * 1000).toLocaleString("zh-CN", {
@@ -2670,40 +2677,192 @@ function formatDate(unixSec) {
   });
 }
 
-// Get file icon emoji based on extension
+const IMAGE_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+  "svg",
+]);
+const DOC_EXTS = new Set([
+  "doc",
+  "docx",
+  "pdf",
+  "ppt",
+  "pptx",
+  "xls",
+  "xlsx",
+]);
+const CODE_EXTS = new Set([
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
+  "rs",
+  "py",
+  "c",
+  "cpp",
+  "h",
+  "java",
+  "go",
+  "rb",
+  "php",
+  "html",
+  "css",
+  "vue",
+  "json",
+  "toml",
+  "yaml",
+  "yml",
+]);
+const ARCHIVE_EXTS = new Set(["zip", "rar", "7z", "tar", "gz", "bz2", "xz"]);
+const AUDIO_EXTS = new Set([
+  "mp3",
+  "wav",
+  "flac",
+  "ogg",
+  "aac",
+  "m4a",
+  "wma",
+  "opus",
+]);
+const VIDEO_EXTS = new Set(["mp4", "avi", "mkv", "webm", "mov", "ogv"]);
+
 function getFileIcon(item) {
   if (item.name === "..") return "↩️";
   if (item.is_dir) return "📁";
-  const ext = item.extension || "";
-  const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"];
-  const docExts = ["doc", "docx", "pdf", "ppt", "pptx", "xls", "xlsx"];
-  const codeExts = [
-    "js",
-    "ts",
-    "rs",
-    "py",
-    "c",
-    "cpp",
-    "java",
-    "go",
-    "rb",
-    "php",
-    "html",
-    "css",
-  ];
-  const archiveExts = ["zip", "rar", "7z", "tar", "gz"];
-  if (imageExts.includes(ext)) return "🖼️";
-  if (docExts.includes(ext)) return "📝";
-  if (codeExts.includes(ext)) return "💻";
-  if (archiveExts.includes(ext)) return "📦";
+  const ext = (item.extension || "").toLowerCase();
+  if (IMAGE_EXTS.has(ext)) return "🖼️";
+  if (DOC_EXTS.has(ext)) return "📝";
+  if (CODE_EXTS.has(ext)) return "💻";
+  if (ARCHIVE_EXTS.has(ext)) return "📦";
   if (ext === "txt" || ext === "md" || ext === "log") return "📄";
-  if (ext === "mp3" || ext === "wav" || ext === "flac" || ext === "ogg")
-    return "🎵";
-  if (ext === "mp4" || ext === "avi" || ext === "mkv") return "🎬";
+  if (AUDIO_EXTS.has(ext)) return "🎵";
+  if (VIDEO_EXTS.has(ext)) return "🎬";
   return "📄";
 }
 
-// Show preview for selected file/folder
+function cachePreview(path, preview) {
+  if (previewCache.has(path)) previewCache.delete(path);
+  previewCache.set(path, preview);
+  while (previewCache.size > PREVIEW_CACHE_MAX) {
+    const oldest = previewCache.keys().next().value;
+    previewCache.delete(oldest);
+  }
+}
+
+function appendPreviewEmpty(parent, message) {
+  const empty = document.createElement("div");
+  empty.className = "preview-empty";
+  empty.textContent = message;
+  parent.appendChild(empty);
+}
+
+function assetSrcForPath(filePath) {
+  try {
+    return convertFileSrc(filePath);
+  } catch (e) {
+    console.warn("[FromZero] convertFileSrc failed:", e);
+    return null;
+  }
+}
+
+function renderPreviewBody(previewContent, item, preview) {
+  clearChildren(previewContent);
+  const useAsset = preview.content === "asset";
+  const filePath = item.data.path;
+
+  if (preview.file_type === "image" && useAsset) {
+    const src = assetSrcForPath(filePath);
+    if (!src) {
+      appendPreviewEmpty(previewContent, "图片路径无效");
+      return;
+    }
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = item.data.name || "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.onerror = () => {
+      clearChildren(previewContent);
+      appendPreviewEmpty(previewContent, "图片加载失败");
+    };
+    previewContent.appendChild(img);
+  } else if (preview.file_type === "pdf" && useAsset) {
+    const src = assetSrcForPath(filePath);
+    if (!src) {
+      appendPreviewEmpty(previewContent, "PDF 路径无效");
+      return;
+    }
+    const iframe = document.createElement("iframe");
+    iframe.src = src;
+    iframe.title = item.data.name || "PDF";
+    iframe.className = "preview-pdf";
+    iframe.setAttribute("sandbox", "allow-same-origin allow-scripts");
+    previewContent.appendChild(iframe);
+  } else if (preview.file_type === "audio" && useAsset) {
+    const src = assetSrcForPath(filePath);
+    if (!src) {
+      appendPreviewEmpty(previewContent, "音频路径无效");
+      return;
+    }
+    const audio = document.createElement("audio");
+    audio.src = src;
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.setAttribute("controlsList", "nodownload");
+    audio.className = "preview-audio";
+    previewContent.appendChild(audio);
+  } else if (preview.file_type === "video" && useAsset) {
+    const src = assetSrcForPath(filePath);
+    if (!src) {
+      appendPreviewEmpty(previewContent, "视频路径无效");
+      return;
+    }
+    const video = document.createElement("video");
+    video.src = src;
+    video.controls = true;
+    video.preload = "metadata";
+    video.className = "preview-video";
+    previewContent.appendChild(video);
+  } else if (preview.file_type === "text" && preview.content) {
+    const pre = document.createElement("pre");
+    pre.textContent = preview.content;
+    previewContent.appendChild(pre);
+  } else if (preview.file_type === "folder") {
+    const ul = document.createElement("ul");
+    ul.className = "folder-list";
+    if (preview.content) {
+      preview.content.split("\n").forEach((line) => {
+        if (line.trim()) {
+          const li = document.createElement("li");
+          li.textContent = line;
+          ul.appendChild(li);
+        }
+      });
+    }
+    if (!ul.childElementCount) {
+      appendPreviewEmpty(previewContent, "空文件夹");
+      return;
+    }
+    previewContent.appendChild(ul);
+  } else {
+    const tooLargeMsg = {
+      image: "图片过大，无法预览",
+      pdf: "PDF 过大，无法预览",
+      audio: "音频过大，无法预览",
+      video: "视频过大，无法预览",
+    };
+    appendPreviewEmpty(
+      previewContent,
+      tooLargeMsg[preview.file_type] || "不可直接预览",
+    );
+  }
+}
+
 async function showPreview(item) {
   const previewPanel = document.getElementById("preview-panel");
   const previewHeader = document.getElementById("preview-header");
@@ -2712,153 +2871,81 @@ async function showPreview(item) {
   if (!previewPanel || !previewHeader || !previewMeta || !previewContent)
     return;
 
-  // Only show preview for file/directory items
   if (!item || (item.type !== "file" && item.type !== "dir")) {
     previewPanel.classList.remove("active");
+    activePreviewPath = null;
     return;
   }
 
   const requestedPath = item.data.path;
+  // Same path already rendered — skip redundant work
+  if (activePreviewPath === requestedPath && previewPanel.classList.contains("active")) {
+    return;
+  }
+
+  const requestId = ++previewRequestId;
   previewPanel.classList.add("active");
   previewHeader.textContent = item.data.name || "";
+
+  const applyPreview = (preview) => {
+    if (requestId !== previewRequestId) return;
+    if (
+      !filteredItems[selectedIndex] ||
+      !filteredItems[selectedIndex].data ||
+      filteredItems[selectedIndex].data.path !== requestedPath
+    ) {
+      return;
+    }
+    const metaParts = [];
+    if (preview.size > 0) metaParts.push(formatFileSize(preview.size));
+    if (preview.modified) metaParts.push(formatDate(preview.modified));
+    if (preview.file_type && preview.file_type !== "binary") {
+      metaParts.push(preview.file_type.toUpperCase());
+    }
+    previewMeta.textContent = metaParts.join(" · ") || "";
+    renderPreviewBody(previewContent, item, preview);
+    activePreviewPath = requestedPath;
+  };
+
+  const cached = previewCache.get(requestedPath);
+  if (cached) {
+    // Move to end (recent)
+    cachePreview(requestedPath, cached);
+    applyPreview(cached);
+    return;
+  }
+
   previewMeta.textContent = "加载中...";
   clearChildren(previewContent);
 
   try {
     const preview = await invoke("get_file_preview", { path: requestedPath });
-    if (
-      !filteredItems[selectedIndex] ||
-      filteredItems[selectedIndex].data.path !== requestedPath
-    ) {
-      return; // Stale request, ignore
-    }
-    // Update meta
-    const metaParts = [];
-    if (preview.size > 0) metaParts.push(formatFileSize(preview.size));
-    if (preview.modified) metaParts.push(formatDate(preview.modified));
-    previewMeta.textContent = metaParts.join(" · ") || "";
-
-    // Render content
-    clearChildren(previewContent);
-    if (preview.file_type === "image" && preview.content) {
-      const img = document.createElement("img");
-      img.src = preview.content;
-      img.alt = item.data.name;
-      img.loading = "lazy";
-      previewContent.appendChild(img);
-    } else if (preview.file_type === "pdf" && preview.content) {
-      try {
-        const base64Data = preview.content.split(",")[1] || preview.content;
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: "application/pdf" });
-        const blobUrl = URL.createObjectURL(blob);
-
-        const iframe = document.createElement("iframe");
-        iframe.src = blobUrl;
-        iframe.style.width = "100%";
-        iframe.style.height = "100%";
-        iframe.style.border = "none";
-        iframe.style.borderRadius = "8px";
-        iframe.style.backgroundColor = "white";
-        iframe.dataset.blobUrl = blobUrl;
-
-        previewContent.appendChild(iframe);
-      } catch (err) {
-        console.error("PDF preview error:", err);
-        const errDiv = document.createElement("div");
-        errDiv.className = "preview-empty";
-        errDiv.textContent = "PDF 预览失败";
-        previewContent.appendChild(errDiv);
-      }
-    } else if (preview.file_type === "audio" && preview.content) {
-      try {
-        const base64Data = preview.content.split(",")[1] || preview.content;
-        const mimeMatch = preview.content.match(/^data:([^;]+);base64,/);
-        const mimeType = mimeMatch ? mimeMatch[1] : "audio/ogg";
-
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: mimeType });
-        const blobUrl = URL.createObjectURL(blob);
-
-        const audio = document.createElement("audio");
-        audio.src = blobUrl;
-        audio.controls = true;
-        audio.setAttribute("controlsList", "nodownload");
-        audio.style.width = "100%";
-        audio.style.marginTop = "20px";
-        audio.style.borderRadius = "4px";
-        audio.dataset.blobUrl = blobUrl;
-
-        previewContent.appendChild(audio);
-      } catch (err) {
-        console.error("Audio preview error:", err);
-        const errDiv = document.createElement("div");
-        errDiv.className = "preview-empty";
-        errDiv.textContent = "音频预览失败";
-        previewContent.appendChild(errDiv);
-      }
-    } else if (preview.file_type === "text" && preview.content) {
-      const pre = document.createElement("pre");
-      pre.textContent = preview.content;
-      previewContent.appendChild(pre);
-    } else if (preview.file_type === "folder" && preview.content) {
-      const ul = document.createElement("ul");
-      ul.className = "folder-list";
-      preview.content.split("\n").forEach((line) => {
-        if (line.trim()) {
-          const li = document.createElement("li");
-          li.textContent = line;
-          ul.appendChild(li);
-        }
-      });
-      previewContent.appendChild(ul);
-    } else {
-      const empty = document.createElement("div");
-      empty.className = "preview-empty";
-      if (preview.file_type === "image") {
-        empty.textContent = "图片过大，无法预览";
-      } else if (preview.file_type === "pdf") {
-        empty.textContent = "PDF 过大，无法预览";
-      } else if (preview.file_type === "audio") {
-        empty.textContent = "音频过大，无法预览";
-      } else {
-        empty.textContent = "不可直接预览";
-      }
-      previewContent.appendChild(empty);
-    }
+    if (requestId !== previewRequestId) return;
+    cachePreview(requestedPath, preview);
+    applyPreview(preview);
   } catch (e) {
+    if (requestId !== previewRequestId) return;
     previewMeta.textContent = "预览失败";
     clearChildren(previewContent);
-    const errDiv = document.createElement("div");
-    errDiv.className = "preview-empty";
-    errDiv.textContent = "无法加载预览";
-    previewContent.appendChild(errDiv);
+    appendPreviewEmpty(previewContent, "无法加载预览");
+    activePreviewPath = null;
   }
 }
 
-// Hide preview panel
 function hidePreview() {
   clearTimeout(previewDebounceTimeout);
+  previewRequestId++; // cancel in-flight showPreview
+  activePreviewPath = null;
   const previewPanel = document.getElementById("preview-panel");
   if (previewPanel) previewPanel.classList.remove("active");
   const previewContent = document.getElementById("preview-content");
   if (previewContent) clearChildren(previewContent);
 }
 
-// Debounced preview update when selection changes
 function triggerPreview(item) {
   clearTimeout(previewDebounceTimeout);
+  // 80ms: enough to coalesce rapid hover without feeling laggy
   previewDebounceTimeout = setTimeout(() => {
     showPreview(item);
-  }, 50);
+  }, 80);
 }
