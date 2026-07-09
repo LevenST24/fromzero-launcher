@@ -36,7 +36,24 @@ pub fn update_settings(
     // Only re-register the global hotkey if it actually changed
     // Register first, so if it fails, settings are not saved to disk
     if old_settings.shortcut != settings.shortcut {
-        register_shortcut_internal(&app_handle, &settings.shortcut)?;
+        if let Err(e) = register_shortcut_internal(&app_handle, &settings.shortcut) {
+            // Registration failed and the old binding was already released inside
+            // register_shortcut_internal. Roll back to the previous shortcut so the
+            // actually-bound hotkey stays consistent with the (unchanged) saved
+            // config, instead of leaving the app with no working hotkey.
+            if let Err(re) = register_shortcut_internal(&app_handle, &old_settings.shortcut) {
+                eprintln!(
+                    "[FromZero] ✗ Failed to restore previous shortcut '{}': {}",
+                    old_settings.shortcut, re
+                );
+            } else {
+                eprintln!(
+                    "[FromZero] ↻ Restored previous shortcut '{}' after failed change",
+                    old_settings.shortcut
+                );
+            }
+            return Err(e);
+        }
     }
 
     // Compare and update capture FPS
@@ -278,6 +295,11 @@ pub fn open_folder(path: String) -> Result<(), String> {
     }
 
     let path_buf = std::path::PathBuf::from(&resolved);
+    // Security restriction: reject network/share (UNC) paths, matching the
+    // boundary enforced by list_directory/get_file_preview/open_file.
+    if !is_safe_path(&path_buf) {
+        return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
+    }
     if !path_buf.exists() {
         return Err(format!("文件夹路径不存在: {}", resolved));
     }
@@ -393,13 +415,23 @@ pub fn register_shortcut_internal(
     use std::str::FromStr;
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
+    // Parse FIRST, before touching any existing registration, so an invalid
+    // shortcut string leaves the currently-bound hotkey untouched.
     let shortcut = Shortcut::from_str(shortcut_str)
         .map_err(|e| format!("Invalid shortcut format '{}': {}", shortcut_str, e))?;
 
-    // Unregister all existing shortcuts first
+    // Only now that we have a valid shortcut do we release the old binding and
+    // attempt to bind the new one. This keeps the function single-purpose:
+    // it either ends with exactly the target shortcut bound (Ok), or it
+    // reports an error to the caller, who owns the fallback/rollback policy.
     let _ = app_handle.global_shortcut().unregister_all();
+    // Defensively unregister the target shortcut specifically: unregister_all()
+    // does not always evict an identical combo from the underlying manager, which
+    // otherwise surfaces as "HotKey already registered" when re-binding the same
+    // key (e.g. switching back to a previously-used shortcut). Ignore the error
+    // raised when it simply wasn't registered.
+    let _ = app_handle.global_shortcut().unregister(shortcut);
 
-    // Register the new shortcut with toggle visibility handler
     match app_handle
         .global_shortcut()
         .on_shortcut(shortcut, move |app, _shortcut, event| {
@@ -417,24 +449,10 @@ pub fn register_shortcut_internal(
             Ok(())
         }
         Err(e) => {
-            // Registration failed — try to restore the default shortcut as fallback
             eprintln!(
                 "[FromZero] ✗ Failed to register shortcut '{}': {}",
                 shortcut_str, e
             );
-            if let Ok(default_shortcut) = Shortcut::from_str("Ctrl+Space") {
-                let _ = app_handle.global_shortcut().on_shortcut(
-                    default_shortcut,
-                    move |app, _shortcut, event| {
-                        if let tauri_plugin_global_shortcut::ShortcutState::Pressed = event.state {
-                            if let Some(window) = app.get_webview_window("main") {
-                                toggle_window_visibility(&window);
-                            }
-                        }
-                    },
-                );
-                eprintln!("[FromZero] ↻ Restored default Ctrl+Space as fallback");
-            }
             Err(format!("快捷键 '{}' 注册失败: {}", shortcut_str, e))
         }
     }
@@ -451,39 +469,9 @@ pub fn debug_log(_msg: String) {
 /// glassBlur > 0 → blurred (DWMSBT_TRANSIENTWINDOW), corner rounding = DWMWCP_ROUND (letting DWM natively round windows to prevent sharp rect ghost corners).
 #[cfg(target_os = "windows")]
 #[tauri::command]
-pub fn set_blur(app: AppHandle, value: i32) -> Result<(), String> {
-    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
-    const DWMSBT_NONE: u32 = 1;
-    const DWMSBT_TRANSIENTWINDOW: u32 = 3;
-
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWCP_DONOTROUND: u32 = 1;
-    const DWMWCP_ROUND: u32 = 2;
-
-    let window = app.get_webview_window("main").ok_or("Window not found")?;
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    let raw_hwnd = hwnd.0;
-
-    let backdrop_type = if value > 0 {
-        DWMSBT_TRANSIENTWINDOW
-    } else {
-        DWMSBT_NONE
-    };
-    crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop_type)?;
-
-    // Toggle corner rounding dynamically to eliminate sharp corner ghosting on startup/acrylic states
-    let corner_pref = if value > 0 {
-        DWMWCP_ROUND
-    } else {
-        DWMWCP_DONOTROUND
-    };
-    crate::dwm::set_dwm_attribute(raw_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, corner_pref)?;
-
-    eprintln!(
-        "[FromZero] DWM Acrylic {}, corner rounding set to {}",
-        if value > 0 { "enabled" } else { "disabled" },
-        if value > 0 { "ROUND" } else { "DONOTROUND" }
-    );
+pub fn set_blur(_app: AppHandle, _value: i32) -> Result<(), String> {
+    // Completely disable flawed DWM Acrylic fallback to prevent system-level corner leaking & pixel artifacts.
+    // WebGL-based Liquid Glass will handle all rounding and blur natively with pixel-perfect anti-aliasing.
     Ok(())
 }
 
@@ -519,12 +507,22 @@ fn is_safe_path(path: &std::path::Path) -> bool {
     if let Some(path_str) = path.to_str() {
         let normalized = path_str.replace('/', "\\");
         if normalized.starts_with(r"\\") {
+            // Reject UNC network/share paths (\\server\share and \\?\UNC\...).
             if normalized.starts_with(r"\\?\UNC\") {
                 return false;
             }
-            if !normalized.starts_with(r"\\?\") && !normalized.starts_with(r"\\.\") {
+            // Reject the device namespace (\\.\PhysicalDrive0, \\.\PIPE\..., etc.).
+            // These are not regular filesystem paths and must never be opened.
+            if normalized.starts_with(r"\\.\") {
                 return false;
             }
+            // Allow only the \\?\ extended-length prefix for normal local paths;
+            // anything else under \\ (i.e. a bare \\server\share) is rejected.
+            if !normalized.starts_with(r"\\?\") {
+                return false;
+            }
+            // \\?\UNC\ already handled above; a remaining \\?\ that still points at
+            // a UNC share is caught there. Local \\?\C:\... paths are fine.
         }
     }
     true
@@ -1026,8 +1024,9 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let dangerous_exts = [
-            "exe", "bat", "cmd", "ps1", "vbs", "wsf", "msi", "scr", "com", "pif", "lnk", "url",
-            "hta", "js", "jse", "msc", "cpl", "reg", "jar",
+            "exe", "bat", "cmd", "ps1", "ps2", "psc1", "psc2", "vbs", "vbe", "wsf", "wsh", "ws",
+            "msi", "msp", "mst", "scr", "com", "pif", "lnk", "url", "hta", "js", "jse", "msc",
+            "cpl", "reg", "jar", "scf", "inf", "gadget", "appref-ms", "application", "vbscript",
         ];
         if dangerous_exts.contains(&ext.as_str()) {
             // Allow only if the file is in the scanned apps whitelist (either as shortcut or target executable)
@@ -1116,6 +1115,28 @@ pub async fn set_capture_fps(app: AppHandle, fps: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_is_safe_path_allows_normal() {
+        assert!(is_safe_path(Path::new(r"C:\Users\me\file.txt")));
+        assert!(is_safe_path(Path::new(r"D:\folder")));
+        assert!(is_safe_path(Path::new(r"\\?\C:\very\long\path")));
+    }
+
+    #[test]
+    fn test_is_safe_path_rejects_unc_share() {
+        assert!(!is_safe_path(Path::new(r"\\server\share")));
+        assert!(!is_safe_path(Path::new(r"\\?\UNC\server\share")));
+        // Forward-slash UNC must be rejected too (normalized internally).
+        assert!(!is_safe_path(Path::new(r"//server/share")));
+    }
+
+    #[test]
+    fn test_is_safe_path_rejects_device_namespace() {
+        assert!(!is_safe_path(Path::new(r"\\.\PhysicalDrive0")));
+        assert!(!is_safe_path(Path::new(r"\\.\PIPE\foo")));
+    }
 
     #[test]
     fn test_score_app_perfect_match() {

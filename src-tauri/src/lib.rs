@@ -224,7 +224,7 @@ pub fn run() {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("[FromZero] ✗ Primary shortcut failed: {e}");
-                    let fallback = "Ctrl+Alt+Space";
+                    let fallback = "Ctrl+Shift+Space";
                     eprintln!("[FromZero]   Trying fallback: {fallback}");
                     match commands::register_shortcut_internal(app.handle(), fallback) {
                         Ok(_) => {
@@ -265,6 +265,8 @@ pub fn run() {
             {
                 remove_dwm_border(&window);
                 exclude_from_capture(&window);
+                let _ =
+                    commands::set_blur(app.handle().clone(), settings.glass_settings.glass_blur);
             }
 
             eprintln!("[FromZero] ✓ Setup complete");

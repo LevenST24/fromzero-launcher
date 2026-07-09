@@ -1,6 +1,6 @@
 [package]
 name = "fromzero-launcher"
-version = "0.2.3"
+version = "0.2.4"
 description = "A Tauri App"
 authors = ["LevenST"]
 edition = "2021"
@@ -32,4 +32,3 @@ windows-capture = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"
-

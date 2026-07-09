@@ -1,218 +1,659 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FromZero Launcher</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script defer src="/main.js?v=1"></script>
-  </head>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>FromZero Launcher</title>
+        <link rel="stylesheet" href="styles.css" />
+        <script defer src="/main.js?v=1"></script>
+    </head>
 
-  <body>
-    <div class="launcher-container" id="launcher-container">
-      <canvas id="bg-canvas"></canvas>
+    <body>
+        <canvas id="bg-canvas"></canvas>
+        <div class="launcher-container" id="launcher-container">
+            <!-- Background ambient orbs -->
+            <div class="liquid-bg">
+                <div class="orb orb-1"></div>
+                <div class="orb orb-2"></div>
+                <div class="orb orb-3"></div>
+                <div class="orb orb-4"></div>
+            </div>
 
+            <!-- Glass tint layer — color tone + saturation over DWM Acrylic blur -->
+            <div class="glass-blur-layer"></div>
 
+            <!-- Liquid Glass: border highlight layers -->
+            <div class="glass-border glass-border-1"></div>
+            <div class="glass-border glass-border-2"></div>
 
-      <!-- Background ambient orbs -->
-      <div class="liquid-bg">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
-        <div class="orb orb-4"></div>
-      </div>
+            <!-- Content wrapper -->
+            <div class="content-wrapper">
+                <!-- 搜索输入区域 -->
+                <header class="search-bar">
+                    <span class="search-icon" id="search-indicator">🔍</span>
+                    <div class="search-input-wrapper">
+                        <input
+                            type="text"
+                            id="search-input"
+                            class="search-input"
+                            placeholder="搜索应用、'f 文件名' 搜文件、'C:\' 浏览目录"
+                            autocomplete="off"
+                            spellcheck="false"
+                            autofocus
+                        />
+                    </div>
+                    <button
+                        class="settings-btn"
+                        id="settings-toggle"
+                        title="设置 (Ctrl+,)"
+                    >
+                        ⚙️
+                    </button>
+                </header>
 
-      <!-- Glass tint layer — color tone + saturation over DWM Acrylic blur -->
-      <div class="glass-blur-layer"></div>
+                <!-- 搜索结果/快捷展示区域 -->
+                <main class="results-area" id="results-area">
+                    <div class="results-left-col" id="results-left-col">
+                        <div class="welcome-screen" id="welcome-screen">
+                            <h2 class="welcome-title">常用应用</h2>
+                            <div class="recent-grid" id="recent-grid"></div>
+                        </div>
+                        <div id="results-list" style="display: none"></div>
+                    </div>
+                    <div class="results-right-col" id="preview-panel">
+                        <div class="preview-header" id="preview-header"></div>
+                        <div class="preview-meta" id="preview-meta"></div>
+                        <div class="preview-content" id="preview-content"></div>
+                    </div>
+                </main>
 
-      <!-- Liquid Glass: border highlight layers -->
-      <div class="glass-border glass-border-1"></div>
-      <div class="glass-border glass-border-2"></div>
+                <!-- 底部状态指示栏 -->
+                <footer class="footer">
+                    <div class="footer-status" id="footer-status">
+                        v0.2.4-preview · 正在加载...
+                    </div>
+                    <div class="footer-shortcuts">
+                        <span><span class="key-badge">↑↓</span> 选择</span>
+                        <span><span class="key-badge">Enter</span> 打开</span>
+                        <span><span class="key-badge">f</span> 搜文件</span>
+                        <span><span class="key-badge">Esc</span> 隐藏</span>
+                    </div>
+                </footer>
+            </div>
+            <!-- /content-wrapper -->
 
-      <!-- Content wrapper -->
-      <div class="content-wrapper">
-        <!-- 搜索输入区域 -->
-        <header class="search-bar">
-        <span class="search-icon" id="search-indicator">🔍</span>
-        <div class="search-input-wrapper">
-          <input
-            type="text"
-            id="search-input"
-            class="search-input"
-            placeholder="搜索应用、'f 文件名' 搜文件、'C:\' 浏览目录"
-            autocomplete="off"
-            spellcheck="false"
-            autofocus
-          />
+            <!-- 设置悬浮面板 -->
+            <div class="modal-overlay" id="settings-overlay">
+                <div class="settings-modal">
+                    <div class="modal-header">
+                        <h3 class="modal-title">FromZero Launcher 设置</h3>
+                        <button class="modal-close" id="settings-close">
+                            ✕
+                        </button>
+                    </div>
+
+                    <div class="settings-tabs">
+                        <button class="tab-btn active" id="tab-btn-general">
+                            常规
+                        </button>
+                        <button class="tab-btn" id="tab-btn-glass">材质</button>
+                        <button class="tab-btn" id="tab-btn-layout">
+                            布局
+                        </button>
+                    </div>
+
+                    <div class="tab-panel active" id="panel-general">
+                        <div class="settings-group">
+                            <label class="settings-label">全局唤起快捷键</label>
+                            <div class="shortcut-recorder">
+                                <span
+                                    class="shortcut-text"
+                                    id="shortcut-display"
+                                    >Ctrl+Alt+Space</span
+                                >
+                                <button class="record-btn" id="record-btn">
+                                    录制组合键
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <label class="settings-label">视觉主题</label>
+                            <select class="settings-select" id="theme-select">
+                                <option value="dark">极简暗黑 (Dark)</option>
+                                <option value="light">清透高雅 (Light)</option>
+                            </select>
+                        </div>
+
+                        <div class="settings-group settings-autostart-row">
+                            <label class="settings-label settings-label-inline"
+                                >开机自启动</label
+                            >
+                            <label class="switch">
+                                <input type="checkbox" id="autostart-toggle" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="settings-group">
+                            <label class="settings-label">搜索引擎前缀</label>
+                            <input
+                                type="text"
+                                class="settings-input settings-engine-display"
+                                value="g : Google | b : 百度 | bi : Bing | gh : GitHub"
+                                disabled
+                            />
+                        </div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-glass">
+                        <div class="settings-section-title">
+                            模糊与折射 (Blur & Refraction)
+                        </div>
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >背景模糊 (Glass Blur)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-glass-blur">20</span>px</span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-glass-blur"
+                                min="0"
+                                max="50"
+                                value="28"
+                            />
+                            <div class="settings-desc">
+                                毛玻璃背景的磨砂模糊程度。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >折射强度 (Refraction)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-strength">25</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-strength"
+                                min="0"
+                                max="60"
+                                value="25"
+                            />
+                            <div class="settings-desc">
+                                WebGL 折射偏移强度，模拟玻璃的光学折射。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >折射帧率 (FPS)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-glass-fps">60</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-glass-fps"
+                                min="15"
+                                max="60"
+                                step="5"
+                                value="60"
+                            />
+                            <div class="settings-desc">
+                                实时折射背景的刷新帧率 (FPS)。
+                            </div>
+                        </div>
+
+                        <div
+                            class="settings-group settings-autostart-row"
+                            style="margin-top: 10px"
+                        >
+                            <div>
+                                <label
+                                    class="settings-label settings-label-inline"
+                                    >Bevel 穹顶圆角模式</label
+                                >
+                                <div class="settings-desc">
+                                    开启时使用 Plano-convex
+                                    穹顶折射（类似透镜放大背景），关闭时使用双凸
+                                    pill 折射。
+                                </div>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="slider-bevel-mode" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="settings-section-title">
+                            反射与光影 (Reflection & Light)
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >边缘高光 (Edge Highlight)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-edge-hl">1.00</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-edge-hl"
+                                min="0.0"
+                                max="2.0"
+                                step="0.05"
+                                value="1.00"
+                            />
+                            <div class="settings-desc">
+                                玻璃边缘斜角高光和内部发光强度。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >镜面反射 (Specular)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-specular">0.00</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-specular"
+                                min="0.0"
+                                max="2.0"
+                                step="0.05"
+                                value="0.00"
+                            />
+                            <div class="settings-desc">
+                                镜面反射反射高光亮度。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >菲涅尔反射 (Fresnel)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-fresnel">0.50</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-fresnel"
+                                min="0.0"
+                                max="5.0"
+                                step="0.1"
+                                value="0.50"
+                            />
+                            <div class="settings-desc">
+                                倾斜视角的边缘反光强度。
+                            </div>
+                        </div>
+
+                        <div class="settings-section-title">
+                            滤镜与色散 (Filters & Dispersion)
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >彩虹色散 (Chrom. Aberration)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-chroma">0.28</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-chroma"
+                                min="0.0"
+                                max="1.0"
+                                step="0.01"
+                                value="0.28"
+                            />
+                            <div class="settings-desc">
+                                光线穿过玻璃边缘时产生的红绿蓝光谱分离度。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >噪点微畸变 (Distortion)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-distort">0.00</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-distort"
+                                min="0.0"
+                                max="0.1"
+                                step="0.005"
+                                value="0.00"
+                            />
+                            <div class="settings-desc">
+                                模拟玻璃表面的微小凹凸产生的光学扭曲。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >色彩饱和度 (Saturation)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-sat">0.00</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-sat"
+                                min="-1.0"
+                                max="1.0"
+                                step="0.1"
+                                value="0.00"
+                            />
+                            <div class="settings-desc">
+                                穿过玻璃背景色彩的饱和度调整。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >亮度调整 (Brightness)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-brightness"
+                                        >-0.30</span
+                                    ></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-brightness"
+                                min="-1.0"
+                                max="1.0"
+                                step="0.05"
+                                value="-0.30"
+                            />
+                            <div class="settings-desc">
+                                穿过玻璃的光亮增益（负数变暗，正数变亮）。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >冰蓝染色 (Tint Strength)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-tint-strength"
+                                        >0.20</span
+                                    ></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-tint-strength"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value="0.20"
+                            />
+                            <div class="settings-desc">
+                                调节玻璃吸收红色产生冰蓝冷色染色调。
+                            </div>
+                        </div>
+
+                        <div class="settings-section-title">
+                            物理与外观 (Physics & Shapes)
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >圆角半径 (Corner Radius)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-corner-radius">30</span
+                                    >px</span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-corner-radius"
+                                min="0"
+                                max="100"
+                                step="1"
+                                value="30"
+                            />
+                            <div class="settings-desc">
+                                玻璃窗口四角的圆角半径（像素）。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >斜角宽度 (Z-Radius)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-z-radius">35</span>px</span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-z-radius"
+                                min="5"
+                                max="150"
+                                step="1"
+                                value="35"
+                            />
+                            <div class="settings-desc">
+                                玻璃窗口边缘斜切倒角的宽度（像素）。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >玻璃不透明度 (Opacity)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-opacity">0.95</span></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-opacity"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value="0.95"
+                            />
+                            <div class="settings-desc">
+                                整个玻璃卡片的整体不透明度。
+                            </div>
+                        </div>
+
+                        <div class="settings-section-title">
+                            窗口阴影 (Window Shadows)
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >阴影不透明度 (Shadow Opacity)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-shadow-opacity"
+                                        >0.00</span
+                                    ></span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-shadow-opacity"
+                                min="0.0"
+                                max="1.0"
+                                step="0.05"
+                                value="0.00"
+                            />
+                            <div class="settings-desc">
+                                窗口底层投射阴影的透明度。
+                            </div>
+                        </div>
+
+                        <div class="settings-group">
+                            <div class="settings-slider-header">
+                                <label class="settings-label"
+                                    >阴影散布 (Shadow Spread)</label
+                                >
+                                <span class="settings-slider-value"
+                                    ><span id="val-shadow-spread">0</span
+                                    >px</span
+                                >
+                            </div>
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-shadow-spread"
+                                min="0"
+                                max="50"
+                                step="1"
+                                value="0"
+                            />
+                            <div class="settings-desc">
+                                底层投影的羽化边缘发散宽度。
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-panel" id="panel-layout">
+                        <div class="settings-group">
+                            <label
+                                class="settings-label"
+                                title="卡片圆角超椭圆幂率（2为圆角矩形，值越大越接近直角）"
+                                >超椭圆幂 (N):
+                                <span id="val-squircle-n">4.5</span></label
+                            >
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-squircle-n"
+                                min="2"
+                                max="10"
+                                step="0.5"
+                                value="4.5"
+                            />
+                        </div>
+
+                        <div class="settings-group">
+                            <label
+                                class="settings-label"
+                                title="搜索框高度（像素）"
+                                >搜索框高度:
+                                <span id="val-search-height">46</span>px</label
+                            >
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-search-height"
+                                min="30"
+                                max="80"
+                                step="1"
+                                value="46"
+                            />
+                        </div>
+
+                        <div class="settings-group">
+                            <label
+                                class="settings-label"
+                                title="搜索框下沉/上边距距离（像素）"
+                                >搜索框下沉:
+                                <span id="val-search-offset">10</span>px</label
+                            >
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-search-offset"
+                                min="0"
+                                max="150"
+                                step="1"
+                                value="10"
+                            />
+                        </div>
+
+                        <div class="settings-group">
+                            <label
+                                class="settings-label"
+                                title="搜索结果内容区域的纵向高度（像素）"
+                                >内容区高度:
+                                <span id="val-results-height">280</span
+                                >px</label
+                            >
+                            <input
+                                type="range"
+                                class="settings-slider"
+                                id="slider-results-height"
+                                min="150"
+                                max="330"
+                                step="1"
+                                value="280"
+                            />
+                        </div>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button
+                            class="btn btn-secondary"
+                            id="settings-reset"
+                            style="margin-right: auto"
+                        >
+                            恢复默认
+                        </button>
+                        <button class="btn btn-secondary" id="settings-cancel">
+                            取消
+                        </button>
+                        <button class="btn btn-primary" id="settings-save">
+                            保存配置
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
-        <button class="settings-btn" id="settings-toggle" title="设置 (Ctrl+,)">
-          ⚙️
-        </button>
-      </header>
-
-      <!-- 搜索结果/快捷展示区域 -->
-      <main class="results-area" id="results-area">
-        <div class="results-left-col" id="results-left-col">
-          <div class="welcome-screen" id="welcome-screen">
-            <h2 class="welcome-title">常用应用</h2>
-            <div class="recent-grid" id="recent-grid"></div>
-          </div>
-          <div id="results-list" style="display: none;"></div>
-        </div>
-        <div class="results-right-col" id="preview-panel">
-          <div class="preview-header" id="preview-header"></div>
-          <div class="preview-meta" id="preview-meta"></div>
-          <div class="preview-content" id="preview-content"></div>
-        </div>
-      </main>
-
-      <!-- 底部状态指示栏 -->
-      <footer class="footer">
-        <div class="footer-status" id="footer-status">v0.2.3 · 正在加载...</div>
-        <div class="footer-shortcuts">
-          <span><span class="key-badge">↑↓</span> 选择</span>
-          <span><span class="key-badge">Enter</span> 打开</span>
-          <span><span class="key-badge">f</span> 搜文件</span>
-          <span><span class="key-badge">Esc</span> 隐藏</span>
-        </div>
-      </footer>
-      </div> <!-- /content-wrapper -->
-
-      <!-- 设置悬浮面板 -->
-      <div class="modal-overlay" id="settings-overlay">
-        <div class="settings-modal">
-          <div class="modal-header">
-            <h3 class="modal-title">FromZero Launcher 设置</h3>
-            <button class="modal-close" id="settings-close">✕</button>
-          </div>
-
-          <div class="settings-tabs">
-            <button class="tab-btn active" id="tab-btn-general">常规</button>
-            <button class="tab-btn" id="tab-btn-glass">材质</button>
-            <button class="tab-btn" id="tab-btn-layout">布局</button>
-          </div>
-
-          <div class="tab-panel active" id="panel-general">
-            <div class="settings-group">
-              <label class="settings-label">全局唤起快捷键</label>
-              <div class="shortcut-recorder">
-                <span class="shortcut-text" id="shortcut-display">Alt+Space</span>
-                <button class="record-btn" id="record-btn">录制组合键</button>
-              </div>
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label">视觉主题</label>
-              <select class="settings-select" id="theme-select">
-                <option value="dark">极简暗黑 (Dark)</option>
-                <option value="light">清透高雅 (Light)</option>
-              </select>
-            </div>
-
-            <div class="settings-group settings-autostart-row">
-              <label class="settings-label settings-label-inline">开机自启动</label>
-              <label class="switch">
-                <input type="checkbox" id="autostart-toggle" />
-                <span class="slider"></span>
-              </label>
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label">搜索引擎前缀</label>
-              <input
-                type="text"
-                class="settings-input settings-engine-display"
-                value="g : Google | b : 百度 | bi : Bing | gh : GitHub"
-                disabled
-              />
-            </div>
-          </div>
-
-          <div class="tab-panel" id="panel-glass">
-            <div class="settings-group">
-              <label class="settings-label" title="毛玻璃背景的磨砂模糊程度">背景模糊: <span id="val-glass-blur">8</span>px</label>
-              <input type="range" class="settings-slider" id="slider-glass-blur" min="0" max="30" value="8" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="WebGL折射偏移强度">折射强度: <span id="val-strength">30</span></label>
-              <input type="range" class="settings-slider" id="slider-strength" min="0" max="60" value="30" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="玻璃边缘斜角高光和内部发光强度">边缘高光: <span id="val-edge-hl">0.50</span></label>
-              <input type="range" class="settings-slider" id="slider-edge-hl" min="0.0" max="2.0" step="0.05" value="0.50" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="镜面反射反射高光亮度">镜面反射: <span id="val-specular">0.50</span></label>
-              <input type="range" class="settings-slider" id="slider-specular" min="0.0" max="2.0" step="0.05" value="0.50" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="倾斜视角的边缘反光强度">菲涅尔反射: <span id="val-fresnel">1.00</span></label>
-              <input type="range" class="settings-slider" id="slider-fresnel" min="0.0" max="5.0" step="0.1" value="1.00" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="玻璃窗口四角的圆角半径（像素）">圆角半径: <span id="val-corner-radius">32</span>px</label>
-              <input type="range" class="settings-slider" id="slider-corner-radius" min="0" max="100" step="1" value="32" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="玻璃窗口边缘斜切倒角的宽度（像素）">斜角宽度: <span id="val-z-radius">75</span>px</label>
-              <input type="range" class="settings-slider" id="slider-z-radius" min="5" max="150" step="1" value="75" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="整个玻璃卡片的整体不透明度">玻璃不透明度: <span id="val-opacity">1.00</span></label>
-              <input type="range" class="settings-slider" id="slider-opacity" min="0.0" max="1.0" step="0.05" value="1.00" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="窗口底层投射阴影的透明度">阴影不透明度: <span id="val-shadow-opacity">0.30</span></label>
-              <input type="range" class="settings-slider" id="slider-shadow-opacity" min="0.0" max="1.0" step="0.05" value="0.30" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="底层投影的羽化边缘发散宽度">阴影散布: <span id="val-shadow-spread">16</span>px</label>
-              <input type="range" class="settings-slider" id="slider-shadow-spread" min="0" max="50" step="1" value="16" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="实时折射背景的刷新帧率 (FPS)">折射帧率 (FPS): <span id="val-glass-fps">60</span></label>
-              <input type="range" class="settings-slider" id="slider-glass-fps" min="15" max="60" step="5" value="60" />
-            </div>
-          </div>
-
-          <div class="tab-panel" id="panel-layout">
-            <div class="settings-group">
-              <label class="settings-label" title="卡片圆角超椭圆幂率（2为圆角矩形，值越大越接近直角）">超椭圆幂 (N): <span id="val-squircle-n">4.5</span></label>
-              <input type="range" class="settings-slider" id="slider-squircle-n" min="2" max="10" step="0.5" value="4.5" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="搜索框高度（像素）">搜索框高度: <span id="val-search-height">46</span>px</label>
-              <input type="range" class="settings-slider" id="slider-search-height" min="30" max="80" step="1" value="46" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="搜索框下沉/上边距距离（像素）">搜索框下沉: <span id="val-search-offset">10</span>px</label>
-              <input type="range" class="settings-slider" id="slider-search-offset" min="0" max="150" step="1" value="10" />
-            </div>
-
-            <div class="settings-group">
-              <label class="settings-label" title="搜索结果内容区域的纵向高度（像素）">内容区高度: <span id="val-results-height">280</span>px</label>
-              <input type="range" class="settings-slider" id="slider-results-height" min="150" max="330" step="1" value="280" />
-            </div>
-          </div>
-
-          <div class="modal-actions">
-            <button class="btn btn-secondary" id="settings-cancel">取消</button>
-            <button class="btn btn-primary" id="settings-save">保存配置</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </body>
+    </body>
 </html>

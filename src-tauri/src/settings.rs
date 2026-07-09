@@ -49,10 +49,20 @@ pub struct GlassSettings {
     pub shadow_opacity: f64,
     #[serde(default = "default_shadow_spread")]
     pub shadow_spread: f64,
+    #[serde(default = "default_distortion")]
+    pub distortion: f64,
+    #[serde(default = "default_saturation")]
+    pub saturation: f64,
+    #[serde(default = "default_brightness")]
+    pub brightness: f64,
+    #[serde(default = "default_tint_strength")]
+    pub tint_strength: f64,
+    #[serde(default = "default_bevel_mode")]
+    pub bevel_mode: bool,
 }
 
 fn default_glass_blur() -> i32 {
-    8
+    20
 }
 fn default_border_opacity() -> f64 {
     0.60
@@ -61,10 +71,10 @@ fn default_glass_fps() -> i32 {
     60
 }
 fn default_strength() -> i32 {
-    30
+    28
 }
 fn default_chroma() -> f64 {
-    0.045
+    0.05
 }
 fn default_frost() -> f64 {
     3.0
@@ -89,7 +99,7 @@ fn default_results_height() -> i32 {
 }
 
 fn default_edge_hl() -> f64 {
-    0.50
+    0.05
 }
 fn default_specular() -> f64 {
     0.50
@@ -98,19 +108,34 @@ fn default_fresnel() -> f64 {
     1.00
 }
 fn default_corner_radius() -> f64 {
-    32.0
+    30.0
 }
 fn default_z_radius() -> f64 {
-    75.0
+    100.0
 }
 fn default_opacity() -> f64 {
     1.00
 }
 fn default_shadow_opacity() -> f64 {
-    0.30
+    0.00
 }
 fn default_shadow_spread() -> f64 {
-    16.0
+    0.00
+}
+fn default_distortion() -> f64 {
+    0.00
+}
+fn default_saturation() -> f64 {
+    0.00
+}
+fn default_brightness() -> f64 {
+    -0.20
+}
+fn default_tint_strength() -> f64 {
+    0.20
+}
+fn default_bevel_mode() -> bool {
+    false
 }
 
 impl Default for GlassSettings {
@@ -136,6 +161,11 @@ impl Default for GlassSettings {
             opacity: default_opacity(),
             shadow_opacity: default_shadow_opacity(),
             shadow_spread: default_shadow_spread(),
+            distortion: default_distortion(),
+            saturation: default_saturation(),
+            brightness: default_brightness(),
+            tint_strength: default_tint_strength(),
+            bevel_mode: default_bevel_mode(),
         }
     }
 }
@@ -157,7 +187,7 @@ pub struct Settings {
 }
 
 fn default_shortcut() -> String {
-    "Ctrl+Space".to_string()
+    "Ctrl+Alt+Space".to_string()
 }
 
 fn default_theme() -> String {
@@ -211,6 +241,9 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
                 if let Ok(mut settings) = serde_json::from_str::<Settings>(&content) {
                     settings.glass_settings.glass_fps =
                         settings.glass_settings.glass_fps.clamp(15, 60);
+                    if settings.shortcut == "Shift+Q" {
+                        settings.shortcut = default_shortcut();
+                    }
                     return settings;
                 }
             }
@@ -324,7 +357,7 @@ mod tests {
     #[test]
     fn test_settings_default_values() {
         let settings = Settings::default();
-        assert_eq!(settings.shortcut, "Ctrl+Space");
+        assert_eq!(settings.shortcut, "Ctrl+Alt+Space");
         assert_eq!(settings.theme, "dark");
         assert!(!settings.autostart);
         assert!(settings.recent_apps.is_empty());
@@ -348,16 +381,16 @@ mod tests {
         // When fields are missing, serde defaults should fill them in
         let json = "{}";
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(settings.shortcut, "Ctrl+Space");
+        assert_eq!(settings.shortcut, "Ctrl+Alt+Space");
         assert_eq!(settings.theme, "dark");
         assert!(!settings.autostart);
     }
 
     #[test]
     fn test_settings_deserialization_partial() {
-        let json = "{\"shortcut\": \"Ctrl+Space\", \"theme\": \"light\"}";
+        let json = "{\"shortcut\": \"Ctrl+Alt+Space\", \"theme\": \"light\"}";
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(settings.shortcut, "Ctrl+Space");
+        assert_eq!(settings.shortcut, "Ctrl+Alt+Space");
         assert_eq!(settings.theme, "light");
         assert!(!settings.autostart);
         assert!(settings.web_engines.contains_key("g")); // defaults filled in
