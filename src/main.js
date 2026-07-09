@@ -2797,19 +2797,65 @@ const PREVIEW_RENDERERS = {
     };
     el.appendChild(img);
   },
-  pdf(el, item, preview) {
-    if (preview.content !== "asset") {
-      appendPreviewEmpty(el, "PDF 过大，无法预览");
+  // WebView2/Edge blocks navigating iframe to asset.localhost PDFs
+  // ("此页面已被 Microsoft Edge 阻止"). Serve a blob: URL instead — no sandbox.
+  async pdf(el, item, preview) {
+    if (preview.content !== "blob" && preview.content !== "asset") {
+      appendPreviewEmpty(el, "PDF 过大，无法内嵌预览（可双击用系统打开）");
       return;
     }
-    const src = assetSrcForPath(item.data.path);
-    if (!src) return appendPreviewEmpty(el, "PDF 路径无效");
-    const iframe = document.createElement("iframe");
-    iframe.src = src;
-    iframe.title = item.data.name || "PDF";
-    iframe.className = "preview-pdf";
-    iframe.setAttribute("sandbox", "allow-same-origin allow-scripts");
-    el.appendChild(iframe);
+    const loading = document.createElement("div");
+    loading.className = "preview-empty";
+    loading.textContent = "正在加载 PDF…";
+    el.appendChild(loading);
+
+    const toBlobUrl = async () => {
+      // 1) Prefer fetch via asset protocol (binary, no JSON IPC bloat)
+      const assetUrl = assetSrcForPath(item.data.path);
+      if (assetUrl) {
+        try {
+          const res = await fetch(assetUrl, { cache: "no-store" });
+          if (res.ok) {
+            const buf = await res.arrayBuffer();
+            return URL.createObjectURL(
+              new Blob([buf], { type: "application/pdf" }),
+            );
+          }
+        } catch (e) {
+          console.warn("[FromZero] PDF asset fetch failed, trying IPC:", e);
+        }
+      }
+      // 2) Fallback: Rust reads bytes (works even if fetch/CSP fails)
+      const bytes = await invoke("read_preview_bytes", {
+        path: item.data.path,
+      });
+      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      return URL.createObjectURL(new Blob([u8], { type: "application/pdf" }));
+    };
+
+    try {
+      const blobUrl = await toBlobUrl();
+      if (!el.isConnected) {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch (_) {}
+        return;
+      }
+      clearChildren(el);
+      const iframe = document.createElement("iframe");
+      // Compact chrome inside the side panel
+      iframe.src = `${blobUrl}#toolbar=0&navpanes=0&scrollbar=1`;
+      iframe.title = item.data.name || "PDF";
+      iframe.className = "preview-pdf";
+      iframe.dataset.blobUrl = blobUrl;
+      // Do NOT set sandbox — Edge PDF viewer needs full frame privileges
+      el.appendChild(iframe);
+    } catch (err) {
+      console.error("[FromZero] PDF preview error:", err);
+      if (!el.isConnected) return;
+      clearChildren(el);
+      appendPreviewEmpty(el, "PDF 加载失败，可双击用系统默认应用打开");
+    }
   },
   audio(el, item, preview) {
     if (preview.content !== "asset") {
@@ -2884,7 +2930,20 @@ function renderPreviewBody(previewContent, item, preview) {
   clearChildren(previewContent);
   const renderer =
     PREVIEW_RENDERERS[preview.file_type] || PREVIEW_RENDERERS.binary;
-  renderer(previewContent, item, preview);
+  try {
+    const maybePromise = renderer(previewContent, item, preview);
+    if (maybePromise && typeof maybePromise.then === "function") {
+      maybePromise.catch((err) => {
+        console.error("[FromZero] Preview renderer error:", err);
+        if (previewContent.isConnected && !previewContent.childElementCount) {
+          appendPreviewEmpty(previewContent, "预览渲染失败");
+        }
+      });
+    }
+  } catch (err) {
+    console.error("[FromZero] Preview renderer threw:", err);
+    appendPreviewEmpty(previewContent, "预览渲染失败");
+  }
 }
 
 async function showPreview(item) {

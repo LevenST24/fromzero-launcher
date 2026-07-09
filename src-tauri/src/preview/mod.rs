@@ -39,6 +39,9 @@ enum PreviewKind {
 }
 
 const ASSET: &str = "asset";
+/// Marker: frontend must load via blob from `read_preview_bytes` (not asset iframe).
+/// WebView2/Edge blocks embedding PDF from asset.localhost in sandboxed/cross-origin frames.
+const BLOB: &str = "blob";
 
 const MAX_IMAGE: u64 = 25 * 1024 * 1024;
 const MAX_PDF: u64 = 40 * 1024 * 1024;
@@ -202,7 +205,17 @@ pub fn build_preview(
 
     let preview = match kind {
         PreviewKind::Image => ok(label, asset_or_too_large(size, MAX_IMAGE), size, modified),
-        PreviewKind::Pdf => ok(label, asset_or_too_large(size, MAX_PDF), size, modified),
+        // PDF: blob path (Edge blocks asset:// iframe PDF viewer)
+        PreviewKind::Pdf => ok(
+            label,
+            if size > MAX_PDF {
+                String::new()
+            } else {
+                BLOB.to_string()
+            },
+            size,
+            modified,
+        ),
         PreviewKind::Audio => ok(label, asset_or_too_large(size, MAX_AUDIO), size, modified),
         PreviewKind::Video => ok(label, asset_or_too_large(size, MAX_VIDEO), size, modified),
         PreviewKind::Text => preview_text_file(path, size, modified),
@@ -247,6 +260,28 @@ pub fn resolve_preview_path(
         return Err(format!("文件不存在: {}", raw));
     }
     Ok(path)
+}
+
+/// Load bytes for blob-based preview (currently PDF only).
+/// Hard size cap matches MAX_PDF; extension whitelist prevents arbitrary reads abuse.
+pub fn read_preview_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    // Only formats that must use blob: (WebView2 cannot embed these via asset iframe)
+    let allowed = matches!(ext.as_str(), "pdf");
+    if !allowed {
+        return Err(format!("不支持的预览字节类型: .{}", ext));
+    }
+    let meta = std::fs::metadata(path).map_err(|e| format!("无法读取元数据: {}", e))?;
+    if meta.len() > MAX_PDF {
+        return Err(format!(
+            "文件过大（{} MB），无法内嵌预览",
+            meta.len() / (1024 * 1024)
+        ));
+    }
+    std::fs::read(path).map_err(|e| format!("无法读取文件: {}", e))
 }
 
 #[cfg(test)]

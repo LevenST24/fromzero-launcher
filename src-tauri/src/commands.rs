@@ -845,6 +845,19 @@ pub async fn get_file_preview(path: String) -> Result<FilePreview, String> {
     .map_err(|e| format!("Preview thread failed: {}", e))?
 }
 
+/// Read a small/medium file as raw bytes for WebView-safe preview (PDF blob).
+/// Edge/WebView2 blocks embedding `asset.localhost` PDFs in iframes; the frontend
+/// loads these bytes into a `blob:` URL instead.
+#[tauri::command]
+pub async fn read_preview_bytes(path: String) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        let file_path = crate::preview::resolve_preview_path(&path, &is_safe_path)?;
+        crate::preview::read_preview_bytes(&file_path)
+    })
+    .await
+    .map_err(|e| format!("Preview bytes thread failed: {}", e))?
+}
+
 #[tauri::command]
 pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let apps = if let Ok(apps) = state.apps.lock() {

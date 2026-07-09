@@ -163,6 +163,7 @@ pub fn run() {
             commands::list_directory,
             commands::search_files,
             commands::get_file_preview,
+            commands::read_preview_bytes,
             commands::open_file,
             commands::start_bg_capture,
             commands::stop_bg_capture,
