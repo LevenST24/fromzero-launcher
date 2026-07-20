@@ -25,7 +25,9 @@ dist-ssr
 
 # Local audit source code
 ALL_SOURCE_CODE.md
+allcode.md
 FRONTEND_LIQUID_GLASS.md
+
 
 # Local scratch and demo files
 prism_light_demo.html
