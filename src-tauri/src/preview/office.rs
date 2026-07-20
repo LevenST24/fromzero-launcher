@@ -40,6 +40,12 @@ fn extract_tag_texts(xml: &str, local_tag: &str) -> Vec<String> {
     let mut i = 0;
     let len = xml.len();
 
+    // Pre-build common close tag patterns (avoid per-iteration allocation)
+    let close_b = format!("</{}>", local_tag);
+    let close_c = format!("</a:{}>", local_tag);
+    let close_d = format!("</w:{}>", local_tag);
+    let close_e = format!("</t:{}>", local_tag);
+
     while i < len {
         let Some(rel) = xml[i..].find('<') else {
             break;
@@ -86,10 +92,6 @@ fn extract_tag_texts(xml: &str, local_tag: &str) -> Vec<String> {
 
         // Closing tag: </full_name> or </prefix:local> variants
         let close_a = format!("</{}>", full_name);
-        let close_b = format!("</{}>", local_tag);
-        let close_c = format!("</a:{}>", local_tag);
-        let close_d = format!("</w:{}>", local_tag);
-        let close_e = format!("</t:{}>", local_tag);
 
         let search = &xml[open_end..];
         let close_at = [close_a.as_str(), close_b.as_str(), close_c.as_str(), close_d.as_str(), close_e.as_str()]
@@ -105,7 +107,6 @@ fn extract_tag_texts(xml: &str, local_tag: &str) -> Vec<String> {
         let raw = &search[..cpos];
         let plain = strip_inner_tags(raw);
         let text = decode_xml_entities(&plain);
-        // Preserve intentional spaces inside runs, but drop pure-empty
         if !text.is_empty() {
             out.push(text);
         }

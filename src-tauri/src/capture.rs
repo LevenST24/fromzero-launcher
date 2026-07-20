@@ -39,14 +39,16 @@ fn control_slot() -> &'static Mutex<Option<CaptureCtrl>> {
     CONTROL.get_or_init(|| Mutex::new(None))
 }
 
-pub struct CaptureHandler;
+pub struct CaptureHandler {
+    buf: Vec<u8>,
+}
 
 impl GraphicsCaptureApiHandler for CaptureHandler {
     type Flags = ();
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(_ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        Ok(Self)
+        Ok(Self { buf: Vec::new() })
     }
 
     fn on_frame_arrived(
@@ -55,25 +57,23 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         let (x0, y0, x1, y1) = *CROP.lock().unwrap();
-        // Crop the frame buffer to match the window bounds on screen
         let mut cropped = frame.buffer_crop(x0, y0, x1, y1)?;
         let bytes = cropped.as_nopadding_buffer()?;
 
         let src_w = x1 - x0;
         let src_h = y1 - y0;
 
-        // Full physical resolution capture for high clarity
-        let dst_w = src_w;
-        let dst_h = src_h;
-        let dst_data = bytes.to_vec();
+        // Reuse the internal buffer to avoid per-frame allocation (~1MB at 60fps)
+        self.buf.clear();
+        self.buf.extend_from_slice(bytes);
 
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
         *LATEST_FRAME.lock().unwrap() = Some(FrameData {
-            w: dst_w,
-            h: dst_h,
+            w: src_w,
+            h: src_h,
             seq,
-            data: Arc::new(dst_data),
+            data: Arc::new(self.buf.clone()),
         });
         Ok(())
     }

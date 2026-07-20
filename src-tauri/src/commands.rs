@@ -20,11 +20,13 @@ pub fn update_settings(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     settings: Settings,
+    old_settings: Option<Settings>,
 ) -> Result<(), String> {
     let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
 
-    // Compare old and new autostart setting to prevent writing registry on every launch
-    let old_settings = settings::load_settings(&app_handle);
+    // Use caller-provided old settings to avoid a synchronous disk read under lock
+    let old_settings = old_settings.unwrap_or_else(|| settings::load_settings(&app_handle));
+
     if old_settings.autostart != settings.autostart {
         eprintln!(
             "[FromZero] Autostart setting changed: {} -> {}",
@@ -465,22 +467,6 @@ pub fn debug_log(_msg: String) {
     println!("[Frontend-Debug] {}", _msg);
 }
 
-/// Toggle DWM Acrylic blur on/off based on glassBlur value, and dynamically adjust native corner rounding.
-/// glassBlur = 0 → transparent (DWMSBT_NONE), corner rounding = DWMWCP_DONOTROUND (letting WebGL shape corners).
-/// glassBlur > 0 → blurred (DWMSBT_TRANSIENTWINDOW), corner rounding = DWMWCP_ROUND (letting DWM natively round windows to prevent sharp rect ghost corners).
-#[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn set_blur(_app: AppHandle, _value: i32) -> Result<(), String> {
-    // Completely disable flawed DWM Acrylic fallback to prevent system-level corner leaking & pixel artifacts.
-    // WebGL-based Liquid Glass will handle all rounding and blur natively with pixel-perfect anti-aliasing.
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-pub fn set_blur(_app: AppHandle, _value: i32) -> Result<(), String> {
-    Ok(())
-}
 
 // =============================================
 // File Explorer Commands

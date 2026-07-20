@@ -159,7 +159,6 @@ pub fn run() {
             commands::open_search,
             commands::execute_sys_command,
             commands::debug_log,
-            commands::set_blur,
             commands::list_directory,
             commands::search_files,
             commands::get_file_preview,
@@ -267,8 +266,6 @@ pub fn run() {
             {
                 remove_dwm_border(&window);
                 exclude_from_capture(&window);
-                let _ =
-                    commands::set_blur(app.handle().clone(), settings.glass_settings.glass_blur);
             }
 
             eprintln!("[FromZero] ✓ Setup complete");

@@ -93,12 +93,6 @@ let glassSettings = {
   tintStrength: 0.2,
   bevelMode: false,
 
-  // Deprecated fields kept for compatibility
-  borderOpacity: 0.6,
-  chroma: 0.05,
-  frost: 3.0,
-  beer: 15,
-  caustic: 0.6,
   squircleN: 4.5,
 };
 let backupGlassSettings = null;
@@ -106,7 +100,6 @@ let backupGlassSettings = null;
 // Search debounce and query race condition tracking
 let lastSearchId = 0;
 let searchDebounceTimeout = null;
-let setBlurTimeout = null;
 
 // Focus management: timestamp of last show (for debounce)
 let lastShowTime = 0;
@@ -309,11 +302,6 @@ async function handleWindowFocus() {
     container.classList.remove("liquid-glass-active");
   }
 
-  // Keep DWM Acrylic active during starting phase
-  try {
-    await invoke("set_blur", { value: glassSettings.glassBlur });
-  } catch (_) {}
-
   try {
     await invoke("start_bg_capture");
     if (gen !== captureGeneration || !pumping) return;
@@ -336,9 +324,6 @@ async function handleWindowFocus() {
       container.classList.add("blurred");
       container.classList.remove("liquid-glass-active");
     }
-    try {
-      await invoke("set_blur", { value: glassSettings.glassBlur });
-    } catch (_) {}
   }
 
   setTimeout(() => {
@@ -362,11 +347,6 @@ window.addEventListener("blur", async () => {
     container.classList.add("blurred");
     container.classList.remove("liquid-glass-active");
   }
-
-  // Restore DWM Acrylic for a smooth show/fade transition next time
-  try {
-    await invoke("set_blur", { value: glassSettings.glassBlur });
-  } catch (_) {}
 
   try {
     await invoke("stop_bg_capture");
@@ -476,16 +456,6 @@ function applyVisualSettings(config) {
 
   // Set canvas blur CSS custom property directly (full range up to 30px)
   container.style.setProperty("--canvas-blur", `${config.glassBlur}px`);
-
-  // Toggle DWM Acrylic: only when not in LiquidGlass or Starting state
-  if (glassState === "Acrylic" || glassState === "Stopping") {
-    clearTimeout(setBlurTimeout);
-    setBlurTimeout = setTimeout(() => {
-      try {
-        invoke("set_blur", { value: config.glassBlur });
-      } catch (e) {}
-    }, 60);
-  }
 
   // Dynamically update recent apps list row count based on container height
   renderRecentApps();
@@ -750,12 +720,6 @@ function readSlidersState() {
       document.getElementById("slider-tint-strength").value,
     ),
     bevelMode: bevelEl ? bevelEl.checked : false,
-
-    // Maintain old fields internally for compatibility
-    borderOpacity: glassSettings.borderOpacity,
-    frost: glassSettings.frost,
-    beer: glassSettings.beer,
-    caustic: glassSettings.caustic,
   };
 }
 
@@ -1452,12 +1416,10 @@ async function pumpFrames(myToken) {
           );
 
           // 2. GPU two-pass separable Gaussian blur of the background.
-          // Half-resolution blur (scaleDown=2): ~4× fewer texels, main shader
-          // samples with normalized UVs so size is irrelevant. Falls back to
-          // the sharp bg if the blur program is unavailable.
-          const scaleDown = 2;
-          const bw = Math.max(1, Math.floor(w / scaleDown));
-          const bh = Math.max(1, Math.floor(h / scaleDown));
+          // Full-resolution blur to avoid bilinear upscaling softness that
+          // half-res FBOs introduce when sampled back at full size.
+          const bw = w;
+          const bh = h;
           let blurResultTex = bgTexture;
           if (blurProgram && ensureBlurFbos(bw, bh)) {
             // Light, full-resolution Gaussian. The reference "liquid glass" look
@@ -1572,9 +1534,6 @@ async function pumpFrames(myToken) {
               container.classList.remove("blurred");
               container.classList.add("liquid-glass-active");
             }
-            try {
-              await invoke("set_blur", { value: 0 });
-            } catch (_) {}
           }
         }
       }
@@ -1619,19 +1578,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (settings.glass_settings) {
       glassSettings.glassBlur =
         settings.glass_settings.glass_blur ?? glassSettings.glassBlur;
-      glassSettings.borderOpacity =
-        settings.glass_settings.border_opacity ?? glassSettings.borderOpacity;
       glassSettings.glassFps =
         settings.glass_settings.glass_fps ?? glassSettings.glassFps;
       glassSettings.strength =
         settings.glass_settings.strength ?? glassSettings.strength;
       glassSettings.chroma =
         settings.glass_settings.chroma ?? glassSettings.chroma;
-      glassSettings.frost =
-        settings.glass_settings.frost ?? glassSettings.frost;
-      glassSettings.beer = settings.glass_settings.beer ?? glassSettings.beer;
-      glassSettings.caustic =
-        settings.glass_settings.caustic ?? glassSettings.caustic;
       glassSettings.squircleN =
         settings.glass_settings.squircle_n ?? glassSettings.squircleN;
       glassSettings.searchHeight =
@@ -1670,12 +1622,6 @@ window.addEventListener("DOMContentLoaded", async () => {
         settings.glass_settings.bevel_mode ?? glassSettings.bevelMode;
     }
     applyVisualSettings(glassSettings);
-    // Set initial DWM Acrylic state based on glassBlur slider
-    try {
-      await invoke("set_blur", { value: glassSettings.glassBlur });
-    } catch (e) {
-      console.warn("[FromZero] set_blur init failed:", e);
-    }
 
     applyTheme(settings.theme);
     if (shortcutDisplay)
@@ -1738,7 +1684,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         searchDebounceTimeout = setTimeout(() => {
           searchDebounceTimeout = null;
           handleSearch();
-        }, 100);
+        }, 180);
       });
       searchInput.addEventListener("input", () => {
         if (isComposing) return;
@@ -1746,11 +1692,38 @@ window.addEventListener("DOMContentLoaded", async () => {
         searchDebounceTimeout = setTimeout(() => {
           searchDebounceTimeout = null;
           handleSearch();
-        }, 100);
+        }, 180);
       });
     }
 
     window.addEventListener("keydown", handleGlobalKeys);
+
+    // Delegated event listeners on resultsList (replaces per-item listeners)
+    if (resultsList) {
+      resultsList.addEventListener("click", (e) => {
+        const item = e.target.closest(".result-item");
+        if (!item) return;
+        selectedIndex = parseInt(item.getAttribute("data-index"), 10);
+        updateSelectionVisual();
+      });
+      resultsList.addEventListener("dblclick", (e) => {
+        const item = e.target.closest(".result-item");
+        if (!item) return;
+        const idx = parseInt(item.getAttribute("data-index"), 10);
+        selectedIndex = idx;
+        updateSelectionVisual();
+        executeItemAction(filteredItems[idx]);
+      });
+      resultsList.addEventListener("mouseenter", (e) => {
+        const item = e.target.closest(".result-item");
+        if (!item) return;
+        if (e.screenX === lastMouseX && e.screenY === lastMouseY) return;
+        lastMouseX = e.screenX;
+        lastMouseY = e.screenY;
+        selectedIndex = parseInt(item.getAttribute("data-index"), 10);
+        updateSelectionVisual();
+      }, true);
+    }
 
     if (settingsToggle) settingsToggle.addEventListener("click", openSettings);
     if (settingsClose) settingsClose.addEventListener("click", closeSettings);
@@ -2187,22 +2160,7 @@ function renderResults() {
     el.appendChild(info);
     el.appendChild(badge);
     el.appendChild(action);
-    el.addEventListener("click", () => {
-      selectedIndex = index;
-      updateSelectionVisual();
-    });
-    el.addEventListener("dblclick", () => {
-      selectedIndex = index;
-      updateSelectionVisual();
-      executeItemAction(item);
-    });
-    el.addEventListener("mouseenter", (e) => {
-      if (e.screenX === lastMouseX && e.screenY === lastMouseY) return;
-      lastMouseX = e.screenX;
-      lastMouseY = e.screenY;
-      selectedIndex = index;
-      updateSelectionVisual();
-    });
+    el.setAttribute("data-index", index);
     fragment.appendChild(el);
   });
   resultsList.appendChild(fragment);
@@ -2482,20 +2440,10 @@ function resetToDefaults() {
     searchHeight: 46,
     searchOffset: 10,
     resultsHeight: 280,
-
-    // Maintain deprecated fields
-    borderOpacity: 0.6,
-    chroma: 0.05,
-    frost: 3.0,
-    beer: 15,
-    caustic: 0.6,
   };
 
   syncSlidersToConfig(defaults);
   applyVisualSettings(defaults);
-  invoke("set_blur", { value: defaults.glassBlur }).catch((e) =>
-    console.warn(e),
-  );
 }
 
 async function saveSettingsConfig() {
@@ -2528,17 +2476,10 @@ async function saveSettingsConfig() {
     brightness: nextGlassSettings.brightness,
     tint_strength: nextGlassSettings.tintStrength,
     bevel_mode: nextGlassSettings.bevelMode,
-
-    // Maintain deprecated fields for backward compatibility
-    border_opacity: nextGlassSettings.borderOpacity,
-    chroma: nextGlassSettings.chroma,
-    frost: nextGlassSettings.frost,
-    beer: nextGlassSettings.beer,
-    caustic: nextGlassSettings.caustic,
   };
 
   try {
-    await invoke("update_settings", { settings: nextSettings });
+    await invoke("update_settings", { settings: nextSettings, oldSettings: settings });
     // Success: commit to global variables
     settings = nextSettings;
     glassSettings = nextGlassSettings;
