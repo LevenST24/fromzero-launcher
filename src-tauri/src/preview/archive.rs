@@ -209,7 +209,7 @@ pub fn preview_tar(path: &Path) -> Result<String, String> {
         }
 
         // Skip file data (rounded up to 512)
-        let skip = ((size + 511) / 512) * 512;
+        let skip = size.div_ceil(512) * 512;
         if skip > 0 {
             file.seek(SeekFrom::Current(skip as i64))
                 .map_err(|e| format!("读取 tar 失败: {}", e))?;

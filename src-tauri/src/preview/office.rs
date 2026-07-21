@@ -65,7 +65,7 @@ fn extract_tag_texts(xml: &str, local_tag: &str) -> Vec<String> {
         // Tag name runs until whitespace, '>', or '/'
         let name_start = i + 1;
         let name_end = xml[name_start..]
-            .find(|c: char| c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '>' || c == '/')
+            .find([' ', '\t', '\n', '\r', '>', '/'])
             .map(|n| name_start + n)
             .unwrap_or(len);
         if name_end <= name_start {

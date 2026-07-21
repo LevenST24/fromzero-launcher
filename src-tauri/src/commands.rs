@@ -130,7 +130,6 @@ pub async fn scan_apps(
 
         // Spawn asynchronous background scan to refresh the list if anything changed
         let app_handle_bg = app_handle.clone();
-        let apps_old = apps.clone();
         tokio::spawn(async move {
             let app_handle_bg_clone = app_handle_bg.clone();
             let apps_now =
@@ -138,17 +137,20 @@ pub async fn scan_apps(
                     .await;
 
             if let Ok(new_apps) = apps_now {
-                let mut changed = false;
-                if new_apps.len() != apps_old.len() {
-                    changed = true;
-                } else {
-                    for (a, b) in new_apps.iter().zip(apps_old.iter()) {
-                        if a.path != b.path || a.name != b.name || a.target != b.target {
-                            changed = true;
-                            break;
+                // Compare against the in-memory cache to avoid holding a deep copy
+                // of the old list for the lifetime of this task.
+                let changed = match app_handle_bg.try_state::<AppState>() {
+                    Some(bg_state) => match bg_state.apps.lock() {
+                        Ok(cache) => {
+                            new_apps.len() != cache.len()
+                                || new_apps.iter().zip(cache.iter()).any(|(a, b)| {
+                                    a.path != b.path || a.name != b.name || a.target != b.target
+                                })
                         }
-                    }
-                }
+                        Err(_) => true,
+                    },
+                    None => true,
+                };
 
                 if changed {
                     eprintln!(
@@ -162,7 +164,7 @@ pub async fn scan_apps(
                         }
                     }
                     // Emit event to notify frontend to refresh
-                    let _ = app_handle_bg.emit("apps-updated", new_apps.clone());
+                    let _ = app_handle_bg.emit("apps-updated", &new_apps);
                     // Extract icons for new apps
                     indexer::trigger_icon_extraction(app_handle_bg, new_apps);
                 }
@@ -383,28 +385,32 @@ fn toggle_window_visibility(window: &tauri::WebviewWindow) {
         let _ = window.set_focus();
         #[cfg(target_os = "windows")]
         {
-            if let Ok(hwnd) = window.hwnd() {
-                use std::ffi::c_void;
+            use std::ffi::c_void;
+            type SetForegroundWindowFn = unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
+            // Resolve SetForegroundWindow once; user32.dll stays loaded for the
+            // process lifetime so the raw fn pointer remains valid.
+            static SET_FG: std::sync::OnceLock<Option<SetForegroundWindowFn>> =
+                std::sync::OnceLock::new();
+            let set_fg = SET_FG.get_or_init(|| unsafe {
+                let user32_name = std::ffi::CString::new("user32.dll").ok()?;
+                let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
+                if user32.is_null() {
+                    return None;
+                }
+                let func_name = std::ffi::CString::new("SetForegroundWindow").ok()?;
+                let proc_addr = winapi::um::libloaderapi::GetProcAddress(user32, func_name.as_ptr());
+                if proc_addr.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute::<
+                        *mut winapi::shared::minwindef::__some_function,
+                        SetForegroundWindowFn,
+                    >(proc_addr))
+                }
+            });
+            if let (Ok(hwnd), Some(set_fg)) = (window.hwnd(), set_fg) {
                 unsafe {
-                    type SetForegroundWindowFn =
-                        unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
-                    if let Ok(user32_name) = std::ffi::CString::new("user32.dll") {
-                        let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
-                        if !user32.is_null() {
-                            if let Ok(func_name) = std::ffi::CString::new("SetForegroundWindow") {
-                                let proc_addr = winapi::um::libloaderapi::GetProcAddress(
-                                    user32,
-                                    func_name.as_ptr(),
-                                );
-                                if !proc_addr.is_null() {
-                                    let set_fg: SetForegroundWindowFn =
-                                        std::mem::transmute(proc_addr);
-                                    set_fg(hwnd.0);
-                                }
-                            }
-                            winapi::um::libloaderapi::FreeLibrary(user32);
-                        }
-                    }
+                    set_fg(hwnd.0);
                 }
             }
         }
@@ -519,7 +525,10 @@ fn clean_path_str(path: String) -> String {
 }
 
 fn is_hidden_or_system(entry: &std::fs::DirEntry) -> bool {
-    let name = entry.file_name().to_string_lossy().to_string();
+    let name_os = entry.file_name();
+    // Compare via bytes when the name is valid ASCII-ish UTF-8 to avoid
+    // allocating a String per directory entry on hot scan paths.
+    let name = name_os.to_string_lossy();
     if IGNORED_DIRS.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
         return true;
     }

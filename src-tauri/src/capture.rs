@@ -39,16 +39,14 @@ fn control_slot() -> &'static Mutex<Option<CaptureCtrl>> {
     CONTROL.get_or_init(|| Mutex::new(None))
 }
 
-pub struct CaptureHandler {
-    buf: Vec<u8>,
-}
+pub struct CaptureHandler;
 
 impl GraphicsCaptureApiHandler for CaptureHandler {
     type Flags = ();
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn new(_ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        Ok(Self { buf: Vec::new() })
+        Ok(Self)
     }
 
     fn on_frame_arrived(
@@ -63,17 +61,23 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         let src_w = x1 - x0;
         let src_h = y1 - y0;
 
-        // Reuse the internal buffer to avoid per-frame allocation (~1MB at 60fps)
-        self.buf.clear();
-        self.buf.extend_from_slice(bytes);
-
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
-        *LATEST_FRAME.lock().unwrap() = Some(FrameData {
+        let mut slot = LATEST_FRAME.lock().unwrap();
+        // Reclaim the previous frame's buffer if nobody else holds it,
+        // reusing its capacity instead of allocating ~1MB per frame.
+        let mut buf = slot
+            .take()
+            .and_then(|old| Arc::try_unwrap(old.data).ok())
+            .unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(bytes);
+
+        *slot = Some(FrameData {
             w: src_w,
             h: src_h,
             seq,
-            data: Arc::new(self.buf.clone()),
+            data: Arc::new(buf),
         });
         Ok(())
     }

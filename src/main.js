@@ -6,10 +6,12 @@ let invoke, getCurrentWindow, listen, convertFileSrc;
 if (window.__TAURI__) {
   invoke = window.__TAURI__.core.invoke;
   getCurrentWindow = window.__TAURI__.window.getCurrentWindow;
-  const currentWin = getCurrentWindow();
-  listen = window.__TAURI__.event
-    ? window.__TAURI__.event.listen.bind(window.__TAURI__.event)
-    : currentWin.listen.bind(currentWin);
+  if (window.__TAURI__.event) {
+    listen = window.__TAURI__.event.listen.bind(window.__TAURI__.event);
+  } else {
+    const currentWin = getCurrentWindow();
+    listen = currentWin.listen.bind(currentWin);
+  }
   convertFileSrc = window.__TAURI__.core.convertFileSrc;
 
   // Safe cleanup: delete the global window.__TAURI__ object to protect against XSS command injections
@@ -92,6 +94,7 @@ let glassSettings = {
   brightness: -0.2,
   tintStrength: 0.2,
   bevelMode: false,
+  chroma: 0.05,
 
   squircleN: 4.5,
 };
@@ -131,6 +134,8 @@ let peekTimer = null;
 let gl = null;
 let glProgram = null;
 let bgTexture = null;
+let bgTexW = 0;
+let bgTexH = 0;
 let blurTexture = null;
 let webglInitialized = false;
 let lastRenderedSeq = 0;
@@ -182,15 +187,17 @@ let glassState = "Acrylic"; // "Acrylic", "Starting", "LiquidGlass", "Stopping"
 let captureGeneration = 0;
 let watchdogTimer = null;
 let lastFrameTime = 0;
+let lastRecentLayoutKey = "";
 
 // DOM Elements
 const searchInput = document.getElementById("search-input");
 const searchIndicator = document.getElementById("search-indicator");
-const resultsArea = document.getElementById("results-area");
 const welcomeScreen = document.getElementById("welcome-screen");
 const recentGrid = document.getElementById("recent-grid");
 const resultsList = document.getElementById("results-list");
 const footerStatus = document.getElementById("footer-status");
+const launcherContainer = document.getElementById("launcher-container");
+const bgCanvas = document.getElementById("bg-canvas");
 
 // Settings Modal DOM Elements
 const settingsToggle = document.getElementById("settings-toggle");
@@ -240,7 +247,7 @@ const SYSTEM_COMMANDS = [
   },
 ];
 
-const APP_VERSION = "v0.2.5";
+const APP_VERSION = "v0.2.6";
 
 // =============================================
 // Window Focus/Blur Management & State Machine
@@ -296,7 +303,7 @@ async function handleWindowFocus() {
   pumping = true;
   lastFrameTime = Date.now();
 
-  const container = document.getElementById("launcher-container");
+  const container = launcherContainer;
   if (container) {
     container.classList.add("blurred");
     container.classList.remove("liquid-glass-active");
@@ -342,7 +349,7 @@ window.addEventListener("blur", async () => {
   pumping = false;
   stopWatchdog();
 
-  const container = document.getElementById("launcher-container");
+  const container = launcherContainer;
   if (container) {
     container.classList.add("blurred");
     container.classList.remove("liquid-glass-active");
@@ -398,9 +405,9 @@ function clearChildren(el) {
   }
 }
 
-// Helper: Apply visual configurations to DOM/CSS and SVG filter scales in real time
+// Helper: Apply visual configurations to DOM/CSS in real time
 function applyVisualSettings(config) {
-  const container = document.getElementById("launcher-container");
+  const container = launcherContainer;
   if (!container) return;
 
   activeGlassFps = config.glassFps || 60;
@@ -454,11 +461,14 @@ function applyVisualSettings(config) {
     `${glassSettings.cornerRadius}px`,
   );
 
-  // Set canvas blur CSS custom property directly (full range up to 30px)
-  container.style.setProperty("--canvas-blur", `${config.glassBlur}px`);
-
-  // Dynamically update recent apps list row count based on container height
-  renderRecentApps();
+  // Re-render the recent apps grid only when layout-affecting values change;
+  // every glass slider fires this handler and a full grid rebuild per input
+  // event is wasteful.
+  const layoutKey = `${glassSettings.searchHeight}|${glassSettings.searchOffset}|${glassSettings.resultsHeight}`;
+  if (layoutKey !== lastRecentLayoutKey) {
+    lastRecentLayoutKey = layoutKey;
+    renderRecentApps();
+  }
 }
 
 // 300ms debounced invoke to set_capture_fps
@@ -1235,6 +1245,8 @@ function initWebGL(canvas) {
     tintStrengthLocation = gl.getUniformLocation(glProgram, "u_tintStrength");
 
     bgTexture = gl.createTexture();
+    bgTexW = 0;
+    bgTexH = 0;
     gl.bindTexture(gl.TEXTURE_2D, bgTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -1370,7 +1382,6 @@ async function pumpFrames(myToken) {
   // render loop runs at a time. Tokenless calls (legacy) default to current token.
   if (myToken === undefined) myToken = pumpToken;
   if (!pumping || myToken !== pumpToken) return;
-  const bgCanvas = document.getElementById("bg-canvas");
   if (!bgCanvas) return;
 
   if (!webglInitialized && !initWebGL(bgCanvas)) {
@@ -1397,23 +1408,40 @@ async function pumpFrames(myToken) {
           if (bgCanvas.width !== w || bgCanvas.height !== h) {
             bgCanvas.width = w;
             bgCanvas.height = h;
-            gl.viewport(0, 0, w, h);
           }
 
-          // 1. Upload background texture (unit 0)
+          // 1. Upload background texture (unit 0).
+          // texSubImage2D updates in place when size is unchanged, avoiding
+          // driver-side storage reallocation on every frame.
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, bgTexture);
-          gl.texImage2D(
-            gl.TEXTURE_2D,
-            0,
-            gl.RGBA,
-            w,
-            h,
-            0,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            new Uint8Array(buf),
-          );
+          if (bgTexW === w && bgTexH === h) {
+            gl.texSubImage2D(
+              gl.TEXTURE_2D,
+              0,
+              0,
+              0,
+              w,
+              h,
+              gl.RGBA,
+              gl.UNSIGNED_BYTE,
+              new Uint8Array(buf),
+            );
+          } else {
+            gl.texImage2D(
+              gl.TEXTURE_2D,
+              0,
+              gl.RGBA,
+              w,
+              h,
+              0,
+              gl.RGBA,
+              gl.UNSIGNED_BYTE,
+              new Uint8Array(buf),
+            );
+            bgTexW = w;
+            bgTexH = h;
+          }
 
           // 2. GPU two-pass separable Gaussian blur of the background.
           // Full-resolution blur to avoid bilinear upscaling softness that
@@ -1529,10 +1557,9 @@ async function pumpFrames(myToken) {
             console.log(
               "[FromZero] Handshake: First frame rendered, transitioning to LiquidGlass state",
             );
-            const container = document.getElementById("launcher-container");
-            if (container) {
-              container.classList.remove("blurred");
-              container.classList.add("liquid-glass-active");
+            if (launcherContainer) {
+              launcherContainer.classList.remove("blurred");
+              launcherContainer.classList.add("liquid-glass-active");
             }
           }
         }
@@ -1749,28 +1776,27 @@ window.addEventListener("DOMContentLoaded", async () => {
     // =============================================
     listen("icon-ready", (event) => {
       const appPath = event.payload;
+      const app = appItems.find((a) => a.path === appPath);
+      if (!app) return;
       const recentCard = Array.from(
         document.querySelectorAll(".recent-card"),
       ).find((card) => card.getAttribute("data-app-path") === appPath);
-      const app = appItems.find((a) => a.path === appPath);
-      if (recentCard && app) {
+      if (recentCard) {
         const existingIcon = recentCard.querySelector(".recent-icon");
         if (existingIcon) {
           const newIcon = createIconElement(app.icon_path, "recent-icon");
           recentCard.replaceChild(newIcon, existingIcon);
         }
       }
+      if (!app.icon_path) return;
       const resultIcons = document.querySelectorAll(".result-icon");
       resultIcons.forEach((el) => {
         if (el.getAttribute("data-app-path") === appPath) {
-          const app = appItems.find((a) => a.path === appPath);
-          if (app && app.icon_path) {
-            const newIcon = createIconElement(app.icon_path, "result-icon");
-            newIcon.setAttribute("data-app-path", appPath);
-            newIcon.setAttribute("data-icon-path", app.icon_path);
-            if (el.parentElement) {
-              el.parentElement.replaceChild(newIcon, el);
-            }
+          const newIcon = createIconElement(app.icon_path, "result-icon");
+          newIcon.setAttribute("data-app-path", appPath);
+          newIcon.setAttribute("data-icon-path", app.icon_path);
+          if (el.parentElement) {
+            el.parentElement.replaceChild(newIcon, el);
           }
         }
       });
@@ -1834,13 +1860,11 @@ function renderRecentApps() {
   });
 }
 
+const EMOJI_ICON_REGEX =
+  /^[\u{2190}-\u{21FF}\u{1F300}-\u{1FAF8}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}⚡📂🌐📁🖼️📝💻📦📄🎵🎬]/u;
+
 function createIconElement(iconPath, cssClass) {
-  if (
-    !iconPath ||
-    /^[\u{2190}-\u{21FF}\u{1F300}-\u{1FAF8}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}⚡📂🌐📁🖼️📝💻📦📄🎵🎬]/u.test(
-      iconPath,
-    )
-  ) {
+  if (!iconPath || EMOJI_ICON_REGEX.test(iconPath)) {
     const span = document.createElement("span");
     span.className = (cssClass || "") + " emoji";
     span.textContent = iconPath || "📱";
@@ -2434,6 +2458,7 @@ function resetToDefaults() {
     brightness: -0.2,
     tintStrength: 0.2,
     bevelMode: false,
+    chroma: 0.05,
 
     // Layout defaults
     squircleN: 4.5,
@@ -2476,6 +2501,7 @@ async function saveSettingsConfig() {
     brightness: nextGlassSettings.brightness,
     tint_strength: nextGlassSettings.tintStrength,
     bevel_mode: nextGlassSettings.bevelMode,
+    chroma: nextGlassSettings.chroma,
   };
 
   try {

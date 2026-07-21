@@ -31,7 +31,10 @@ fn get_dwm_func() -> Option<DwmSetWindowAttributeFn> {
         if proc_addr.is_null() {
             return None;
         }
-        Some(std::mem::transmute(proc_addr))
+        Some(std::mem::transmute::<
+            *mut winapi::shared::minwindef::__some_function,
+            DwmSetWindowAttributeFn,
+        >(proc_addr))
     })
 }
 
