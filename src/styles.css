@@ -96,19 +96,42 @@ body {
 
 /* Glass tint layer — fallback panel background while the WebGL liquid glass
    is not active (startup / window unfocused). Needs enough opacity to keep
-   the window clearly visible on its own (no DWM blur behind it). */
+   the window clearly visible on its own (no DWM blur behind it).
+   Vertical gradient + top inner highlight fake the depth of real glass. */
 .glass-blur-layer {
     position: absolute;
     inset: 0;
     z-index: 0;
     pointer-events: none;
     border-radius: inherit;
-    background-color: rgba(18, 18, 24, 0.72);
+    background:
+        linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.055) 0%,
+            rgba(255, 255, 255, 0.015) 30%,
+            rgba(0, 0, 0, 0.04) 100%
+        ),
+        rgba(17, 17, 23, 0.66);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.09),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+        inset 0 -18px 36px rgba(0, 0, 0, 0.16);
     filter: saturate(120%);
 }
 
 [data-theme="light"] .glass-blur-layer {
-    background-color: rgba(240, 240, 245, 0.78);
+    background:
+        linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.5) 0%,
+            rgba(255, 255, 255, 0.12) 32%,
+            rgba(0, 0, 0, 0.03) 100%
+        ),
+        rgba(242, 243, 248, 0.72);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.85),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+        inset 0 -18px 36px rgba(0, 0, 0, 0.05);
     filter: saturate(110%);
 }
 
@@ -130,6 +153,11 @@ body {
 /* =============================================
    SEARCH BAR
    ============================================= */
+/* Search bar = a smoked-glass slab floating on the clear liquid glass.
+   The desktop shows through the WebGL canvas behind it, so the plate must
+   supply its own contrast (~50% dark fill; backdrop-filter cannot reach the
+   canvas — separate compositing layer). Gloss comes from the top highlight,
+   1px light border and a soft drop shadow. */
 .search-bar {
     position: relative;
     z-index: 10;
@@ -139,18 +167,55 @@ body {
     margin: var(--search-offset, 10px) 16px 10px 16px;
     height: var(--search-height, 46px);
     padding: 0 16px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
+    background:
+        linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.1) 0%,
+            rgba(255, 255, 255, 0.02) 55%,
+            rgba(0, 0, 0, 0.05) 100%
+        ),
+        rgba(10, 12, 18, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.16),
+        0 6px 18px rgba(0, 0, 0, 0.22);
     box-sizing: border-box;
     transition:
         margin 0.2s,
-        height 0.2s;
+        height 0.2s,
+        border-color 0.18s,
+        box-shadow 0.18s;
+}
+
+[data-theme="light"] .search-bar {
+    background:
+        linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.9) 0%,
+            rgba(255, 255, 255, 0.55) 100%
+        ),
+        rgba(252, 253, 255, 0.6);
+    border-color: rgba(0, 0, 0, 0.1);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 1),
+        0 6px 18px rgba(0, 0, 0, 0.08);
 }
 
 .search-bar:focus-within {
-    border-color: var(--selected-border);
-    box-shadow: 0 0 0 2px rgba(110, 158, 255, 0.16);
+    border-color: rgba(110, 158, 255, 0.55);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        0 0 0 3px rgba(110, 158, 255, 0.16),
+        0 8px 22px rgba(0, 0, 0, 0.26);
+}
+
+[data-theme="light"] .search-bar:focus-within {
+    border-color: rgba(42, 106, 255, 0.45);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 1),
+        0 0 0 3px rgba(42, 106, 255, 0.13),
+        0 8px 22px rgba(0, 0, 0, 0.1);
 }
 
 .search-icon {
@@ -171,15 +236,29 @@ body {
     background: transparent;
     border: none;
     outline: none;
-    color: var(--text-primary);
+    color: rgba(255, 255, 255, 0.96);
+    caret-color: var(--accent);
     font-size: 15px;
     font-family: var(--font-sans);
     letter-spacing: 0.2px;
+    /* Subtle edge shadow keeps glyphs readable over busy refracted content */
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="light"] .search-input {
+    color: rgba(0, 0, 0, 0.9);
+    text-shadow: none;
 }
 
 .search-input::placeholder {
-    color: var(--text-dim);
+    color: rgba(255, 255, 255, 0.48);
     font-size: 13px;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] .search-input::placeholder {
+    color: rgba(0, 0, 0, 0.38);
+    text-shadow: none;
 }
 
 .settings-btn {
@@ -207,7 +286,7 @@ body {
 .results-area {
     position: relative;
     z-index: 10;
-    flex: none;
+    flex: 0 1 auto;
     height: var(--results-height, 280px);
     overflow: hidden;
     margin: 0 16px 12px 16px;
@@ -387,12 +466,23 @@ body {
 }
 
 .welcome-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 1.2px;
     margin-bottom: 10px;
+}
+
+.welcome-title::before {
+    content: "";
+    width: 3px;
+    height: 12px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, var(--accent), rgba(110, 158, 255, 0.35));
 }
 
 /* ── Recent App Grid ── */
@@ -421,8 +511,22 @@ body {
 }
 
 .recent-card:hover {
-    background: var(--hover-bg);
-    transform: translateY(-1px);
+    background: linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.09) 0%,
+        rgba(255, 255, 255, 0.05) 100%
+    );
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 3px 10px rgba(0, 0, 0, 0.16);
+    transform: translateY(-2px);
+}
+
+[data-theme="light"] .recent-card:hover {
+    background: rgba(255, 255, 255, 0.65);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.9),
+        0 3px 10px rgba(0, 0, 0, 0.07);
 }
 
 .recent-card:active {
@@ -435,6 +539,7 @@ body {
     margin-bottom: 8px;
     object-fit: contain;
     border-radius: 6px;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
 }
 
 .recent-icon.emoji {
@@ -486,8 +591,26 @@ body {
 }
 
 .result-item.selected {
-    background: var(--selected-bg);
-    box-shadow: inset 0 0 0 1px var(--selected-border);
+    background: linear-gradient(
+        90deg,
+        rgba(110, 158, 255, 0.18) 0%,
+        rgba(110, 158, 255, 0.08) 100%
+    );
+    box-shadow:
+        inset 3px 0 0 var(--accent),
+        inset 0 0 0 1px var(--selected-border),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .result-item.selected {
+    background: linear-gradient(
+        90deg,
+        rgba(42, 106, 255, 0.14) 0%,
+        rgba(42, 106, 255, 0.05) 100%
+    );
+    box-shadow:
+        inset 3px 0 0 var(--accent),
+        inset 0 0 0 1px var(--selected-border);
 }
 
 .result-item:active {
@@ -519,6 +642,7 @@ body {
     height: 28px;
     object-fit: contain;
     border-radius: 6px;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.22));
 }
 
 .result-icon.emoji {
@@ -554,12 +678,18 @@ body {
 .result-badge {
     flex-shrink: 0;
     font-size: 10px;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background: var(--border-subtle);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--text-secondary);
     font-weight: 500;
     letter-spacing: 0.3px;
+}
+
+[data-theme="light"] .result-badge {
+    background: rgba(0, 0, 0, 0.045);
+    border-color: rgba(0, 0, 0, 0.07);
 }
 
 .result-action {
@@ -581,11 +711,13 @@ body {
 .footer {
     position: relative;
     z-index: 10;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin: 0 16px 16px 16px;
-    padding: 8px 0 0 0;
+    margin: auto 16px 14px 16px;
+    padding: 9px 2px 0 2px;
+    border-top: 1px solid var(--border-subtle);
     font-size: 11px;
     color: var(--text-dim);
 }
@@ -599,12 +731,21 @@ body {
 
 .key-badge {
     display: inline-block;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--border-subtle);
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
     font-size: 10px;
     font-weight: 500;
+    font-family: var(--font-mono);
     margin-right: 2px;
+}
+
+[data-theme="light"] .key-badge {
+    background: rgba(255, 255, 255, 0.75);
+    border-color: rgba(0, 0, 0, 0.12);
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
 }
 
 /* =============================================
@@ -654,10 +795,17 @@ body {
 .settings-modal {
     width: 340px;
     padding: 14px 20px;
-    border-radius: 14px;
-    background: var(--bg-primary);
+    border-radius: 16px;
+    background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.05) 0%,
+            rgba(255, 255, 255, 0) 40%
+        ),
+        var(--bg-primary);
     border: 1px solid var(--border-light);
-    box-shadow: 0 12px 40px var(--shadow-color);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 16px 48px var(--shadow-color);
 }
 
 .settings-tabs {
