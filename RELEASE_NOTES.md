@@ -1,15 +1,38 @@
-# 🚀 FromZero Launcher v0.2.5
-## ⚡ 性能与预览优化：Asset 直链、零 Base64、死代码清理
+# 🚀 FromZero Launcher v0.2.7
+## ⚡ 呼出零延迟、单实例守护与前端模块化重构
 
 [![Tauri](https://img.shields.io/badge/Tauri-v2.x-blue?style=flat-square&logo=tauri)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-green.svg?style=flat-square&logo=windows)](https://microsoft.com)
 
-欢迎来到 **FromZero Launcher v0.2.5**！本版本聚焦**文件预览性能**与**运行时开销**，并清理了无用代码。
+欢迎来到 **FromZero Launcher v0.2.7**！本版本聚焦**呼出响应速度**、**实例与热键一致性**，并完成前端模块化重构。
 
 ---
 
-## ✨ 主要改进 (v0.2.5)
+## ✨ 主要改进 (v0.2.7)
+
+1. **⚡ 液态玻璃呼出零延迟**
+   - 捕获会话**预热**：窗口显示的同一瞬间即在后台线程建立 WGC 会话，与窗口动画、前端 focus 事件并行，消除数百毫秒的"慢一拍"。
+   - 捕获会话**复用**：会话活跃且 FPS 未变时仅热更新裁剪区域瞬时返回，杜绝重复重建；并发启动由专用锁串行化。
+
+2. **🧿 单实例守护与热键一致性**
+   - 新增单实例插件：重复启动不再产生第二个进程（此前会静默抢注热键失败并把降级快捷键写回配置——即"默认键漂移"根因）。
+   - 二次启动 / 托盘唤起 / 单实例信号统一走 `SetForegroundWindow` 强制前台，解决后台进程调 `set_focus` 被 Windows 前台锁定策略拦截导致的"打不开"假象。
+   - 快捷键录制显示 `Ctrl`（原为 `Control`），旧配置加载时自动归一化。
+
+3. **📦 前端模块化重构（2610 行单文件 → 8 个 ES 模块）**
+   - `main.js` 仅保留入口接线；玻璃管线 / 搜索 / 预览 / 设置面板 / 状态 / DOM / Tauri API 各归其位，模块间零循环依赖。
+   - 滑块三重映射表合并为单一 `SLIDER_DEFS`，玻璃参数默认值与 snake_case 映射单点维护（净删 ~400 行重复代码）。
+
+4. **🎨 启动视觉修复**
+   - 清除旧版残留的 4 个彩色光晕球（orbs）与渐变描边层——它们只在 WebGL 首帧前的空窗期可见，造成"闪过古早设计"。
+   - 回退态底色加深，无焦点唤起时窗口不再近乎透明。
+
+---
+
+## 📜 历史版本
+
+### v0.2.5 — 性能与预览优化
 
 1. **🖼️ 文件预览零拷贝（Asset Protocol）**
    - 图片 / PDF / 音频 / 视频预览不再经 IPC 传输 Base64，后端仅返回元数据，前端通过 `convertFileSrc` 直读本地文件。
@@ -28,10 +51,6 @@
 4. **🧹 死代码清理**
    - 移除未使用的鼠标跟踪、离屏 canvas 变量、未引用的窗口常量。
    - 移除已无用的 `base64` 依赖。
-
----
-
-## 📜 历史版本
 
 ### v0.2.4 — 稳定性与安全加固
 
@@ -62,7 +81,8 @@
 ---
 
 ### 📦 绿色单包下载
-* **fromzero-launcher-lite_0.2.4.exe** (~10.7 MB)
+* **fromzero-launcher_0.2.7.exe** (~5.6 MB)
   > [!NOTE]
   > 免安装绿色单包，解压即用。旧系统（Win10 2004 以下）运行会自动降级回毛玻璃（Acrylic）模式。
-* **fromzero-launcher_0.2.4_setup_x64.exe** — NSIS 安装包
+* **fromzero-launcher_0.2.7_x64-setup.exe** — NSIS 安装包
+* **fromzero-launcher_0.2.7_x64_en-US.msi** — MSI 安装包

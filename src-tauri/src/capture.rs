@@ -30,6 +30,9 @@ type CaptureCtrl = windows_capture::capture::CaptureControl<
 >;
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
+// Incremented as soon as a stop is requested. Work queued before that point
+// carries the old epoch and is refused even if it starts running later.
+static LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(1);
 // Capture session control handle
 static CONTROL: OnceLock<Mutex<Option<CaptureCtrl>>> = OnceLock::new();
 // Global target capture FPS
@@ -54,7 +57,12 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         frame: &mut Frame,
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        let (x0, y0, x1, y1) = *CROP.lock().unwrap();
+        let Ok(crop) = CROP.lock() else {
+            return Ok(());
+        };
+        let (x0, y0, x1, y1) = *crop;
+        drop(crop);
+
         let mut cropped = frame.buffer_crop(x0, y0, x1, y1)?;
         let bytes = cropped.as_nopadding_buffer()?;
 
@@ -63,7 +71,9 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         let seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
 
-        let mut slot = LATEST_FRAME.lock().unwrap();
+        let Ok(mut slot) = LATEST_FRAME.lock() else {
+            return Ok(());
+        };
         // Reclaim the previous frame's buffer if nobody else holds it,
         // reusing its capacity instead of allocating ~1MB per frame.
         let mut buf = slot
@@ -83,20 +93,65 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     }
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
+        // The control handle can outlive a session that the OS closed. Mark it
+        // inactive so the next focus event creates a fresh session.
+        SESSION_FPS.store(0, Ordering::Release);
+        if let Ok(mut frame) = LATEST_FRAME.lock() {
+            *frame = None;
+        }
         Ok(())
     }
 }
 
 /// Check if capture session is active
 pub fn is_active() -> bool {
-    let slot = control_slot().lock().unwrap();
-    slot.is_some()
+    SESSION_FPS.load(Ordering::Acquire) != 0
+        && control_slot()
+            .lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(false)
+}
+
+/// FPS the current session was created with (0 = no session). Lets `start`
+/// reuse a live session when only the crop region changed.
+static SESSION_FPS: AtomicU32 = AtomicU32::new(0);
+/// Serializes capture lifecycle changes. Pre-warm, frontend start and focus-loss
+/// stop can otherwise race and leave a hidden window capturing the desktop.
+static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn lifecycle_epoch() -> u64 {
+    LIFECYCLE_EPOCH.load(Ordering::Acquire)
+}
+
+fn stop_session() {
+    let control = control_slot().lock().ok().and_then(|mut slot| slot.take());
+    if let Some(control) = control {
+        let _ = control.stop();
+    }
+    SESSION_FPS.store(0, Ordering::Release);
+    if let Ok(mut frame) = LATEST_FRAME.lock() {
+        *frame = None;
+    }
 }
 
 /// Start graphics capture on the primary monitor.
 /// Coordinates are physical screen pixels.
-pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> Result<(), String> {
-    stop(); // Guarantee idempotence by stopping any existing session first
+/// Reuses a live session (only updating the crop) when the FPS is unchanged —
+/// WGC session creation costs hundreds of ms and dominates summon latency.
+pub fn start_for_epoch(
+    expected_epoch: u64,
+    win_x: i32,
+    win_y: i32,
+    win_w: u32,
+    win_h: u32,
+    pad_phys: u32,
+) -> Result<bool, String> {
+    let _lifecycle_guard = LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "capture lifecycle mutex poisoned".to_string())?;
+    if expected_epoch != lifecycle_epoch() {
+        return Ok(false);
+    }
 
     let monitor = Monitor::primary().map_err(|e| e.to_string())?;
     let mon_w = monitor.width().map_err(|e| e.to_string())?;
@@ -112,9 +167,22 @@ pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> R
         return Err("Invalid window capture bounds: window is off-screen".to_string());
     }
 
-    *CROP.lock().unwrap() = (x0, y0, x1, y1);
+    *CROP.lock().map_err(|_| "CROP mutex poisoned".to_string())? = (x0, y0, x1, y1);
 
     let fps = CAPTURE_FPS.load(Ordering::Relaxed).max(1);
+    if is_active() && SESSION_FPS.load(Ordering::Relaxed) == fps {
+        // Live session with the right FPS: crop already updated, nothing to do.
+        return Ok(true);
+    }
+
+    stop_session();
+
+    // stop() invalidates the epoch before waiting for this lock, so check once
+    // more after monitor setup and before creating the expensive WGC session.
+    if expected_epoch != lifecycle_epoch() {
+        return Ok(false);
+    }
+
     let duration = std::time::Duration::from_nanos((1_000_000_000.0 / fps as f64).round() as u64);
 
     let settings = Settings::new(
@@ -129,18 +197,20 @@ pub fn start(win_x: i32, win_y: i32, win_w: u32, win_h: u32, pad_phys: u32) -> R
     );
 
     let control = CaptureHandler::start_free_threaded(settings).map_err(|e| e.to_string())?;
-    *control_slot().lock().unwrap() = Some(control);
-    Ok(())
+    *control_slot()
+        .lock()
+        .map_err(|_| "control mutex poisoned".to_string())? = Some(control);
+    SESSION_FPS.store(fps, Ordering::Release);
+    Ok(true)
 }
 
 /// Terminate the capture session.
 pub fn stop() {
-    let control = {
-        let mut slot = control_slot().lock().unwrap();
-        slot.take()
-    };
-    if let Some(c) = control {
-        let _ = c.stop();
-    }
-    *LATEST_FRAME.lock().unwrap() = None;
+    LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
+    // Recover a poisoned lifecycle lock here: stopping capture is a privacy
+    // boundary and should remain best-effort even after another thread panics.
+    let _lifecycle_guard = LIFECYCLE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    stop_session();
 }

@@ -23,12 +23,6 @@
     --selected-border: rgba(110, 158, 255, 0.3);
     --shadow-color: rgba(0, 0, 0, 0.5);
     --modal-bg: rgba(8, 8, 13, 0.96);
-    --orb-1: rgba(80, 120, 255, 0.15);
-    --orb-2: rgba(160, 80, 255, 0.12);
-    --orb-3: rgba(80, 220, 180, 0.1);
-    --orb-4: rgba(255, 120, 80, 0.08);
-    --border-highlight-color: rgba(255, 255, 255, 0.4);
-    --border-specular-color: rgba(255, 255, 255, 0.7);
 }
 
 [data-theme="light"] {
@@ -45,12 +39,6 @@
     --selected-border: rgba(42, 106, 255, 0.25);
     --shadow-color: rgba(0, 0, 0, 0.12);
     --modal-bg: rgba(236, 238, 246, 0.96);
-    --orb-1: rgba(80, 120, 255, 0.12);
-    --orb-2: rgba(160, 80, 255, 0.08);
-    --orb-3: rgba(80, 220, 180, 0.06);
-    --orb-4: rgba(255, 120, 80, 0.05);
-    --border-highlight-color: rgba(0, 0, 0, 0.15);
-    --border-specular-color: rgba(255, 255, 255, 0.8);
 }
 
 /* ── Reset ── */
@@ -93,10 +81,6 @@ body {
     isolation: isolate;
     display: flex;
     flex-direction: column;
-    /* Static border angle — no cursor tracking */
-    --border-angle: 135deg;
-    --border1-opacity: 0.18;
-    --border2-opacity: 0.12;
 }
 
 #bg-canvas {
@@ -110,20 +94,21 @@ body {
     filter: none;
 }
 
-/* Glass tint layer — color tone + saturation over DWM Acrylic blur.
-   Sits behind content. Opacity controlled by glassBlur slider via JS. */
+/* Glass tint layer — fallback panel background while the WebGL liquid glass
+   is not active (startup / window unfocused). Needs enough opacity to keep
+   the window clearly visible on its own (no DWM blur behind it). */
 .glass-blur-layer {
     position: absolute;
     inset: 0;
     z-index: 0;
     pointer-events: none;
     border-radius: inherit;
-    background-color: rgba(18, 18, 24, 0.15);
+    background-color: rgba(18, 18, 24, 0.72);
     filter: saturate(120%);
 }
 
 [data-theme="light"] .glass-blur-layer {
-    background-color: rgba(240, 240, 245, 0.18);
+    background-color: rgba(240, 240, 245, 0.78);
     filter: saturate(110%);
 }
 
@@ -140,151 +125,6 @@ body {
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-}
-
-.launcher-container.blurred .liquid-bg {
-    filter: none;
-}
-
-.launcher-container.blurred .glass-border {
-    opacity: 0;
-}
-
-/* =============================================
-   LIQUID BG — Ambient background orbs + frosted glass
-   backdrop-filter is applied here directly (no separate blur layer)
-   ============================================= */
-.liquid-bg {
-    position: absolute;
-    inset: -80px;
-    z-index: 0;
-    pointer-events: none;
-    overflow: hidden;
-    border-radius: inherit;
-}
-
-.orb {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(60px);
-}
-
-.orb-1 {
-    width: 280px;
-    height: 280px;
-    background: var(--orb-1);
-    top: -60px;
-    left: -40px;
-}
-
-.orb-2 {
-    width: 220px;
-    height: 220px;
-    background: var(--orb-2);
-    top: 40px;
-    right: -30px;
-}
-
-.orb-3 {
-    width: 180px;
-    height: 180px;
-    background: var(--orb-3);
-    bottom: -40px;
-    left: 30%;
-}
-
-.orb-4 {
-    width: 140px;
-    height: 140px;
-    background: var(--orb-4);
-    bottom: 20px;
-    right: 20%;
-}
-
-/* =============================================
-   GLASS BORDER — Dynamic border highlight layers
-   ============================================= */
-.glass-border {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    pointer-events: none;
-    border-radius: inherit;
-    padding: 1.5px;
-    -webkit-mask:
-        linear-gradient(#000 0 0) content-box,
-        linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    transition: opacity 0.3s ease;
-}
-
-/* Border layer 1: primary edge highlight with screen blend */
-.glass-border-1 {
-    mix-blend-mode: screen;
-    opacity: var(--border1-opacity, 0.18);
-    background: linear-gradient(
-        var(--border-angle),
-        transparent 0%,
-        var(--border-highlight-color) 20%,
-        transparent 40%,
-        var(--border-highlight-color) 60%,
-        transparent 80%,
-        var(--border-highlight-color) 100%
-    );
-    box-shadow:
-        0 0 0 0.5px rgba(255, 255, 255, 0.3) inset,
-        0 1px 3px rgba(255, 255, 255, 0.15) inset,
-        0 1px 4px rgba(0, 0, 0, 0.25) inset;
-}
-
-/* Border layer 2: specular catch with overlay blend (brighter) */
-.glass-border-2 {
-    mix-blend-mode: overlay;
-    opacity: var(--border2-opacity, 0.12);
-    background: linear-gradient(
-        calc(var(--border-angle) + 60deg),
-        transparent 0%,
-        var(--border-specular-color) 15%,
-        transparent 35%,
-        transparent 65%,
-        var(--border-specular-color) 85%,
-        transparent 100%
-    );
-    box-shadow:
-        0 0 0 0.3px rgba(255, 255, 255, 0.2) inset,
-        0 -0.5px 1.5px rgba(255, 255, 255, 0.1) inset;
-}
-
-[data-theme="light"] .glass-border-1 {
-    mix-blend-mode: multiply;
-    opacity: calc(var(--border1-opacity, 0.18) * 0.55);
-    background: linear-gradient(
-        var(--border-angle),
-        transparent 0%,
-        rgba(0, 0, 0, 0.08) 25%,
-        transparent 50%,
-        rgba(0, 0, 0, 0.05) 75%,
-        transparent 100%
-    );
-    box-shadow:
-        0 0 0 0.5px rgba(0, 0, 0, 0.1) inset,
-        0 1px 3px rgba(0, 0, 0, 0.06) inset,
-        0 1px 4px rgba(0, 0, 0, 0.08) inset;
-}
-
-[data-theme="light"] .glass-border-2 {
-    mix-blend-mode: screen;
-    opacity: calc(var(--border2-opacity, 0.12) * 1.25);
-    background: linear-gradient(
-        calc(var(--border-angle) + 60deg),
-        transparent 0%,
-        rgba(255, 255, 255, 0.6) 20%,
-        transparent 40%,
-        transparent 60%,
-        rgba(255, 255, 255, 0.5) 80%,
-        transparent 100%
-    );
 }
 
 /* =============================================
@@ -306,6 +146,11 @@ body {
     transition:
         margin 0.2s,
         height 0.2s;
+}
+
+.search-bar:focus-within {
+    border-color: var(--selected-border);
+    box-shadow: 0 0 0 2px rgba(110, 158, 255, 0.16);
 }
 
 .search-icon {
@@ -568,6 +413,11 @@ body {
         background 0.15s,
         transform 0.12s;
     background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    min-width: 0;
+    width: 100%;
 }
 
 .recent-card:hover {
@@ -844,6 +694,22 @@ body {
     box-shadow: inset 0 0 0 1px var(--selected-border);
 }
 
+.settings-btn:focus-visible,
+.recent-card:focus-visible,
+.modal-close:focus-visible,
+.tab-btn:focus-visible,
+.record-btn:focus-visible,
+.btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.settings-slider:focus-visible,
+.switch input:focus-visible + .slider {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .tab-panel {
     display: none;
     max-height: 230px;
@@ -1016,6 +882,17 @@ body {
     color: var(--text-primary);
 }
 
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
 .settings-engine-display {
     font-family: var(--font-mono);
     font-size: 12px;
@@ -1144,16 +1021,6 @@ input:checked + .slider:before {
 }
 
 .launcher-container.liquid-glass-active .glass-blur-layer {
-    opacity: 0 !important;
-    clip-path: none !important;
-    -webkit-clip-path: none !important;
-}
-
-.launcher-container.liquid-glass-active .glass-border {
-    opacity: 0 !important;
-}
-
-.launcher-container.liquid-glass-active .liquid-bg {
     opacity: 0 !important;
     clip-path: none !important;
     -webkit-clip-path: none !important;

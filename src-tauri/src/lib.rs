@@ -30,18 +30,17 @@ fn should_toggle_from_tray_event(event: &TrayIconEvent) -> bool {
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
 
-    let tray_icon = app.default_window_icon();
-    if tray_icon.is_none() {
+    let Some(tray_icon) = app.default_window_icon() else {
         eprintln!("[FromZero] Warning: No default window icon available, skipping tray icon setup");
         return Ok(());
-    }
+    };
 
     let quit_i = MenuItem::with_id(handle, "quit", "退出 FromZero Launcher", true, None::<&str>)?;
     let show_i = MenuItem::with_id(handle, "show", "呼出启动器", true, None::<&str>)?;
     let menu = Menu::with_items(handle, &[&show_i, &quit_i])?;
 
     let tray = TrayIconBuilder::new()
-        .icon(tray_icon.unwrap().clone())
+        .icon(tray_icon.clone())
         .tooltip("FromZero Launcher — 双击呼出，右键菜单")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -51,8 +50,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    crate::commands::show_and_focus_window(&window);
                 }
             }
             _ => {}
@@ -68,8 +66,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     if visible {
                         let _ = window.hide();
                     } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        crate::commands::show_and_focus_window(&window);
                     }
                 }
             }
@@ -88,6 +85,15 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin: a second launch exits immediately and
+        // focuses the existing window instead of stealing the global hotkey
+        // (a duplicate instance previously failed registration and silently
+        // persisted the fallback shortcut).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                commands::show_and_focus_window(&window);
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -102,8 +108,10 @@ pub fn run() {
             });
 
             let frame_opt = {
-                let guard = crate::capture::LATEST_FRAME.lock().unwrap();
-                guard.clone()
+                crate::capture::LATEST_FRAME
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone())
             };
 
             if let Some(since) = since_seq {
@@ -248,8 +256,7 @@ pub fn run() {
 
             if !is_autostart {
                 eprintln!("[FromZero] Showing window...");
-                let _ = window.show();
-                let _ = window.set_focus();
+                commands::show_and_focus_window(&window);
             } else {
                 eprintln!(
                     "[FromZero] Booted silently via autostart. Window remains hidden in tray."
@@ -304,8 +311,11 @@ fn exclude_from_capture(window: &WebviewWindow) {
     }
     const WDA_EXCLUDEFROMCAPTURE: u32 = 0x11;
     if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            SetWindowDisplayAffinity(hwnd.0, WDA_EXCLUDEFROMCAPTURE);
+        // SAFETY: hwnd is a valid window handle obtained from Tauri's WebviewWindow.
+        // SetWindowDisplayAffinity is safe to call with WDA_EXCLUDEFROMCAPTURE on any valid HWND.
+        let result = unsafe { SetWindowDisplayAffinity(hwnd.0, WDA_EXCLUDEFROMCAPTURE) };
+        if result == 0 {
+            eprintln!("[FromZero] Warning: SetWindowDisplayAffinity failed");
         }
     }
 }

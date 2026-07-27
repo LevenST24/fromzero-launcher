@@ -101,17 +101,26 @@ fromzero-launcher/
 │   ├── Cargo.toml          # Rust 依赖及静态/动态库构建定义
 │   ├── tauri.conf.json     # Tauri 全局配置文件 (包含 CSP 与权限作用域)
 │   ├── capabilities/       # Tauri v2 细粒度权限安全配给
-│   │   └── default.json
 │   └── src/
-│       ├── lib.rs          # 核心生命周期、原生亚克力毛玻璃、托盘事件集成
-│       ├── settings.rs     # 全局持久化设置（包括自定义快捷键、视觉强度）管理
-│       ├── dwm.rs          # Windows 原生 DWM 及亚克力混合接口动态包装实现
+│       ├── lib.rs          # 核心生命周期、单实例、bgframe 帧协议、托盘事件集成
+│       ├── commands.rs     # 系统安全锁、异步文件查找、目录导航、捕获预热接口
+│       ├── capture.rs      # Windows Graphics Capture 会话管理（复用 + 裁剪热更新）
 │       ├── indexer.rs      # 多线程开始菜单遍历、拼音首字母建树、后台异步提取图标
-│       └── commands.rs     # 系统安全锁、异步文件查找、目录导航及预览流 Rust 接口
+│       ├── settings.rs     # 全局持久化设置（自定义快捷键、视觉参数）原子化读写
+│       ├── dwm.rs          # Windows 原生 DWM 属性接口动态包装实现
+│       └── preview/        # 文件预览管线（office / archive 文本抽取）
 └── src/
     ├── index.html          # 主窗口骨架结构与设置抽屉面板
     ├── styles.css          # Fluent Design 视觉风格、磨砂边框高光与分栏动画样式
-    └── main.js             # 滑动防抖路由、按键组合录制、增量 DOM 更新与 Blob URL 释放管理
+    ├── main.js             # 入口模块：初始化、全局键盘路由、事件接线
+    └── js/
+        ├── tauri.js        # Tauri API 提取与浏览器开发 mock
+        ├── state.js        # 跨模块共享状态与版本常量
+        ├── dom.js          # DOM 引用缓存与安全清空工具
+        ├── glass.js        # WebGL 液态玻璃管线、帧泵、捕获生命周期看门狗
+        ├── search.js       # 搜索路由、结果渲染、最近应用、动作执行
+        ├── preview.js      # 多模态文件预览渲染器与 LRU 缓存
+        └── settings-ui.js  # 设置面板、滑块单表驱动、快捷键录制
 ```
 
 ---

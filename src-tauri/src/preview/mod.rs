@@ -89,12 +89,12 @@ fn classify(ext: &str) -> PreviewKind {
         "gz" | "tgz" => PreviewKind::ArchiveGzip,
 
         // Plain / source text
-        "txt" | "md" | "markdown" | "json" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs"
-        | "rs" | "css" | "scss" | "less" | "html" | "htm" | "vue" | "svelte" | "py" | "sh"
-        | "bash" | "zsh" | "bat" | "cmd" | "ps1" | "toml" | "yaml" | "yml" | "ini" | "log"
-        | "conf" | "cfg" | "xml" | "csv" | "tsv" | "c" | "cpp" | "cc" | "h" | "hpp" | "java"
-        | "kt" | "go" | "rb" | "php" | "sql" | "r" | "swift" | "gitignore" | "env"
-        | "dockerfile" | "makefile" => PreviewKind::Text,
+        "txt" | "md" | "markdown" | "json" | "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "rs"
+        | "css" | "scss" | "less" | "html" | "htm" | "vue" | "svelte" | "py" | "sh" | "bash"
+        | "zsh" | "bat" | "cmd" | "ps1" | "toml" | "yaml" | "yml" | "ini" | "log" | "conf"
+        | "cfg" | "xml" | "csv" | "tsv" | "c" | "cpp" | "cc" | "h" | "hpp" | "java" | "kt"
+        | "go" | "rb" | "php" | "sql" | "r" | "swift" | "gitignore" | "env" | "dockerfile"
+        | "makefile" => PreviewKind::Text,
 
         _ => PreviewKind::Binary,
     }
@@ -117,7 +117,11 @@ fn kind_label(kind: PreviewKind) -> &'static str {
 }
 
 /// Build a folder listing preview.
-fn preview_folder(path: &Path, modified: u64, is_hidden: &dyn Fn(&std::fs::DirEntry) -> bool) -> FilePreview {
+fn preview_folder(
+    path: &Path,
+    modified: u64,
+    is_hidden: &dyn Fn(&std::fs::DirEntry) -> bool,
+) -> FilePreview {
     let mut items = Vec::new();
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -139,12 +143,7 @@ fn preview_text_file(path: &Path, size: u64, modified: u64) -> FilePreview {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            return ok(
-                "binary",
-                format!("无法打开文件: {}", e),
-                size,
-                modified,
-            );
+            return ok("binary", format!("无法打开文件: {}", e), size, modified);
         }
     };
     let mut handle = file.take(TEXT_BYTES);
@@ -157,8 +156,7 @@ fn preview_text_file(path: &Path, size: u64, modified: u64) -> FilePreview {
     }
     let text = String::from_utf8_lossy(&buffer);
     let lines: Vec<&str> = text.lines().take(TEXT_LINES).collect();
-    let truncated =
-        text.lines().nth(TEXT_LINES).is_some() || (size as usize) > buffer.len();
+    let truncated = text.lines().nth(TEXT_LINES).is_some() || (size as usize) > buffer.len();
     let mut body = lines.join("\n");
     if truncated {
         body.push_str("\n…");
@@ -235,9 +233,12 @@ pub fn build_preview(
         PreviewKind::ArchiveTar => {
             extract_or_err(label, archive::preview_tar(path), size, modified)
         }
-        PreviewKind::ArchiveGzip => {
-            ok(label, archive::preview_gzip_hint(path, size), size, modified)
-        }
+        PreviewKind::ArchiveGzip => ok(
+            label,
+            archive::preview_gzip_hint(path, size),
+            size,
+            modified,
+        ),
         PreviewKind::Binary => ok(label, String::new(), size, modified),
     };
 
@@ -245,10 +246,7 @@ pub fn build_preview(
 }
 
 /// Resolve + safety gate used by the Tauri command.
-pub fn resolve_preview_path(
-    raw: &str,
-    is_safe: &dyn Fn(&Path) -> bool,
-) -> Result<PathBuf, String> {
+pub fn resolve_preview_path(raw: &str, is_safe: &dyn Fn(&Path) -> bool) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw);
     if !is_safe(&path) {
         return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
@@ -256,6 +254,9 @@ pub fn resolve_preview_path(
     let path = path
         .canonicalize()
         .map_err(|e| format!("路径解析失败: {}", e))?;
+    if !is_safe(&path) {
+        return Err("安全限制: 路径解析后指向网络、共享或设备路径。".to_string());
+    }
     if !path.exists() {
         return Err(format!("文件不存在: {}", raw));
     }

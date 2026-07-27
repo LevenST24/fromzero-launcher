@@ -5,26 +5,14 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>FromZero Launcher</title>
         <link rel="stylesheet" href="styles.css" />
-        <script defer src="/main.js?v=1"></script>
+        <script type="module" src="/main.js?v=2"></script>
     </head>
 
     <body>
         <canvas id="bg-canvas"></canvas>
-        <div class="launcher-container" id="launcher-container">
-            <!-- Background ambient orbs -->
-            <div class="liquid-bg">
-                <div class="orb orb-1"></div>
-                <div class="orb orb-2"></div>
-                <div class="orb orb-3"></div>
-                <div class="orb orb-4"></div>
-            </div>
-
+        <div class="launcher-container blurred" id="launcher-container">
             <!-- Glass tint layer — color tone + saturation over DWM Acrylic blur -->
             <div class="glass-blur-layer"></div>
-
-            <!-- Liquid Glass: border highlight layers -->
-            <div class="glass-border glass-border-1"></div>
-            <div class="glass-border glass-border-2"></div>
 
             <!-- Content wrapper -->
             <div class="content-wrapper">
@@ -40,12 +28,19 @@
                             autocomplete="off"
                             spellcheck="false"
                             autofocus
+                            role="combobox"
+                            aria-label="搜索应用和文件"
+                            aria-autocomplete="list"
+                            aria-controls="results-list"
+                            aria-expanded="false"
                         />
                     </div>
                     <button
                         class="settings-btn"
                         id="settings-toggle"
+                        type="button"
                         title="设置 (Ctrl+,)"
+                        aria-label="打开设置"
                     >
                         ⚙️
                     </button>
@@ -56,11 +51,25 @@
                     <div class="results-left-col" id="results-left-col">
                         <div class="welcome-screen" id="welcome-screen">
                             <h2 class="welcome-title">常用应用</h2>
-                            <div class="recent-grid" id="recent-grid"></div>
+                            <div
+                                class="recent-grid"
+                                id="recent-grid"
+                                role="group"
+                                aria-label="常用应用"
+                            ></div>
                         </div>
-                        <div id="results-list" style="display: none"></div>
+                        <div
+                            id="results-list"
+                            role="listbox"
+                            aria-label="搜索结果"
+                            style="display: none"
+                        ></div>
                     </div>
-                    <div class="results-right-col" id="preview-panel">
+                    <div
+                        class="results-right-col"
+                        id="preview-panel"
+                        aria-live="polite"
+                    >
                         <div class="preview-header" id="preview-header"></div>
                         <div class="preview-meta" id="preview-meta"></div>
                         <div class="preview-content" id="preview-content"></div>
@@ -69,8 +78,8 @@
 
                 <!-- 底部状态指示栏 -->
                 <footer class="footer">
-                    <div id="footer-status">
-                        v0.2.6 · 正在加载...
+                    <div id="footer-status" role="status" aria-live="polite">
+                        v0.2.7 · 正在加载...
                     </div>
                     <div class="footer-shortcuts">
                         <span><span class="key-badge">↑↓</span> 选择</span>
@@ -83,26 +92,69 @@
             <!-- /content-wrapper -->
 
             <!-- 设置悬浮面板 -->
-            <div class="modal-overlay" id="settings-overlay">
-                <div class="settings-modal">
+            <div
+                class="modal-overlay"
+                id="settings-overlay"
+                aria-hidden="true"
+                inert
+            >
+                <div
+                    class="settings-modal"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="settings-title"
+                >
                     <div class="modal-header">
-                        <h3 class="modal-title">FromZero Launcher 设置</h3>
-                        <button class="modal-close" id="settings-close">
+                        <h3 class="modal-title" id="settings-title">
+                            FromZero Launcher 设置
+                        </h3>
+                        <button
+                            class="modal-close"
+                            id="settings-close"
+                            type="button"
+                            aria-label="关闭设置"
+                        >
                             ✕
                         </button>
                     </div>
 
-                    <div class="settings-tabs">
-                        <button class="tab-btn active" id="tab-btn-general">
+                    <div class="settings-tabs" role="tablist" aria-label="设置分类">
+                        <button
+                            class="tab-btn active"
+                            id="tab-btn-general"
+                            type="button"
+                            role="tab"
+                            aria-selected="true"
+                            aria-controls="panel-general"
+                        >
                             常规
                         </button>
-                        <button class="tab-btn" id="tab-btn-glass">材质</button>
-                        <button class="tab-btn" id="tab-btn-layout">
+                        <button
+                            class="tab-btn"
+                            id="tab-btn-glass"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="panel-glass"
+                        >材质</button>
+                        <button
+                            class="tab-btn"
+                            id="tab-btn-layout"
+                            type="button"
+                            role="tab"
+                            aria-selected="false"
+                            aria-controls="panel-layout"
+                        >
                             布局
                         </button>
                     </div>
 
-                    <div class="tab-panel active" id="panel-general">
+                    <div
+                        class="tab-panel active"
+                        id="panel-general"
+                        role="tabpanel"
+                        aria-labelledby="tab-btn-general"
+                    >
                         <div class="settings-group">
                             <label class="settings-label">全局唤起快捷键</label>
                             <div class="shortcut-recorder">
@@ -111,14 +163,20 @@
                                     id="shortcut-display"
                                     >Ctrl+Alt+Space</span
                                 >
-                                <button class="record-btn" id="record-btn">
+                                <button
+                                    class="record-btn"
+                                    id="record-btn"
+                                    type="button"
+                                >
                                     录制组合键
                                 </button>
                             </div>
                         </div>
 
                         <div class="settings-group">
-                            <label class="settings-label">视觉主题</label>
+                            <label class="settings-label" for="theme-select"
+                                >视觉主题</label
+                            >
                             <select class="settings-select" id="theme-select">
                                 <option value="dark">极简暗黑 (Dark)</option>
                                 <option value="light">清透高雅 (Light)</option>
@@ -130,7 +188,11 @@
                                 >开机自启动</label
                             >
                             <label class="switch">
-                                <input type="checkbox" id="autostart-toggle" />
+                                <input
+                                    type="checkbox"
+                                    id="autostart-toggle"
+                                    aria-label="开机自启动"
+                                />
                                 <span class="slider"></span>
                             </label>
                         </div>
@@ -146,7 +208,12 @@
                         </div>
                     </div>
 
-                    <div class="tab-panel" id="panel-glass">
+                    <div
+                        class="tab-panel"
+                        id="panel-glass"
+                        role="tabpanel"
+                        aria-labelledby="tab-btn-glass"
+                    >
                         <div class="settings-section-title">
                             模糊与折射 (Blur & Refraction)
                         </div>
@@ -163,6 +230,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-glass-blur"
+                                aria-label="背景模糊"
                                 min="0"
                                 max="50"
                                 value="28"
@@ -185,6 +253,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-strength"
+                                aria-label="折射强度"
                                 min="0"
                                 max="60"
                                 value="25"
@@ -207,6 +276,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-glass-fps"
+                                aria-label="折射帧率"
                                 min="15"
                                 max="60"
                                 step="5"
@@ -233,7 +303,11 @@
                                 </div>
                             </div>
                             <label class="switch">
-                                <input type="checkbox" id="slider-bevel-mode" />
+                                <input
+                                    type="checkbox"
+                                    id="slider-bevel-mode"
+                                    aria-label="Bevel 穹顶圆角模式"
+                                />
                                 <span class="slider"></span>
                             </label>
                         </div>
@@ -255,6 +329,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-edge-hl"
+                                aria-label="边缘高光"
                                 min="0.0"
                                 max="2.0"
                                 step="0.05"
@@ -278,6 +353,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-specular"
+                                aria-label="镜面反射"
                                 min="0.0"
                                 max="2.0"
                                 step="0.05"
@@ -301,6 +377,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-fresnel"
+                                aria-label="菲涅尔反射"
                                 min="0.0"
                                 max="5.0"
                                 step="0.1"
@@ -328,6 +405,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-chroma"
+                                aria-label="彩虹色散"
                                 min="0.0"
                                 max="1.0"
                                 step="0.01"
@@ -351,6 +429,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-distort"
+                                aria-label="噪点微畸变"
                                 min="0.0"
                                 max="0.1"
                                 step="0.005"
@@ -374,6 +453,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-sat"
+                                aria-label="色彩饱和度"
                                 min="-1.0"
                                 max="1.0"
                                 step="0.1"
@@ -399,6 +479,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-brightness"
+                                aria-label="亮度调整"
                                 min="-1.0"
                                 max="1.0"
                                 step="0.05"
@@ -424,6 +505,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-tint-strength"
+                                aria-label="冰蓝染色"
                                 min="0.0"
                                 max="1.0"
                                 step="0.05"
@@ -452,6 +534,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-corner-radius"
+                                aria-label="平面圆角"
                                 min="0"
                                 max="100"
                                 step="1"
@@ -475,6 +558,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-z-radius"
+                                aria-label="立体曲率"
                                 min="5"
                                 max="150"
                                 step="1"
@@ -498,6 +582,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-opacity"
+                                aria-label="玻璃不透明度"
                                 min="0.0"
                                 max="1.0"
                                 step="0.05"
@@ -527,6 +612,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-shadow-opacity"
+                                aria-label="阴影不透明度"
                                 min="0.0"
                                 max="1.0"
                                 step="0.05"
@@ -551,6 +637,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-shadow-spread"
+                                aria-label="阴影扩散"
                                 min="0"
                                 max="50"
                                 step="1"
@@ -562,7 +649,12 @@
                         </div>
                     </div>
 
-                    <div class="tab-panel" id="panel-layout">
+                    <div
+                        class="tab-panel"
+                        id="panel-layout"
+                        role="tabpanel"
+                        aria-labelledby="tab-btn-layout"
+                    >
                         <div class="settings-group">
                             <label
                                 class="settings-label"
@@ -574,6 +666,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-squircle-n"
+                                aria-label="超椭圆曲线"
                                 min="2"
                                 max="10"
                                 step="0.5"
@@ -592,6 +685,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-search-height"
+                                aria-label="搜索栏高度"
                                 min="30"
                                 max="80"
                                 step="1"
@@ -610,6 +704,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-search-offset"
+                                aria-label="搜索栏垂直偏移"
                                 min="0"
                                 max="150"
                                 step="1"
@@ -629,6 +724,7 @@
                                 type="range"
                                 class="settings-slider"
                                 id="slider-results-height"
+                                aria-label="结果区域高度"
                                 min="150"
                                 max="330"
                                 step="1"
@@ -641,14 +737,23 @@
                         <button
                             class="btn btn-secondary"
                             id="settings-reset"
+                            type="button"
                             style="margin-right: auto"
                         >
                             恢复默认
                         </button>
-                        <button class="btn btn-secondary" id="settings-cancel">
+                        <button
+                            class="btn btn-secondary"
+                            id="settings-cancel"
+                            type="button"
+                        >
                             取消
                         </button>
-                        <button class="btn btn-primary" id="settings-save">
+                        <button
+                            class="btn btn-primary"
+                            id="settings-save"
+                            type="button"
+                        >
                             保存配置
                         </button>
                     </div>

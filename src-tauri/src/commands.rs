@@ -9,6 +9,38 @@ pub struct AppState {
     pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
 }
 
+/// (Re)start the background capture for the main window using its current
+/// geometry. `capture::start` is idempotent, so this doubles as a restart.
+async fn restart_capture_for_window(app_handle: &AppHandle) -> Result<(), String> {
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pad_phys = (40.0 * scale).round() as u32; // 40 CSS px padding
+    let window_for_capture = window.clone();
+    let capture_epoch = crate::capture::lifecycle_epoch();
+    tokio::task::spawn_blocking(move || {
+        if !window_for_capture.is_visible().unwrap_or(false)
+            || !window_for_capture.is_focused().unwrap_or(false)
+        {
+            return Err("安全限制: 窗口不可见时无法启动后台捕获。".to_string());
+        }
+        crate::capture::start_for_epoch(
+            capture_epoch,
+            pos.x,
+            pos.y,
+            size.width,
+            size.height,
+            pad_phys,
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn get_settings(app_handle: AppHandle, state: State<'_, AppState>) -> Result<Settings, String> {
     let _guard = state.settings_lock.lock().map_err(|e| e.to_string())?;
@@ -67,16 +99,7 @@ pub fn update_settings(
         if crate::capture::is_active() {
             let app_handle_clone = app_handle.clone();
             tokio::spawn(async move {
-                if let Some(window) = app_handle_clone.get_webview_window("main") {
-                    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
-                        let scale = window.scale_factor().unwrap_or(1.0);
-                        let pad_phys = (40.0 * scale).round() as u32;
-                        let _ = tokio::task::spawn_blocking(move || {
-                            crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-                        })
-                        .await;
-                    }
-                }
+                let _ = restart_capture_for_window(&app_handle_clone).await;
             });
         }
     }
@@ -305,8 +328,11 @@ pub fn open_folder(path: String) -> Result<(), String> {
     if !is_safe_path(&path_buf) {
         return Err("安全限制: 不允许访问网络或共享(UNC)路径。".to_string());
     }
-    if !path_buf.exists() {
-        return Err(format!("文件夹路径不存在: {}", resolved));
+    let path_buf = path_buf
+        .canonicalize()
+        .map_err(|e| format!("路径解析失败: {}", e))?;
+    if !is_safe_path(&path_buf) {
+        return Err("安全限制: 路径解析后指向网络、共享或设备路径。".to_string());
     }
 
     // Security restriction: Force path to be a directory, preventing EXE execution
@@ -314,7 +340,7 @@ pub fn open_folder(path: String) -> Result<(), String> {
         return Err("Security Error: The path is not a folder directory".to_string());
     }
 
-    open::that(&resolved).map_err(|e| format!("Failed to open folder: {}", e))
+    open::that(&path_buf).map_err(|e| format!("Failed to open folder: {}", e))
 }
 
 #[tauri::command]
@@ -375,45 +401,79 @@ pub fn execute_sys_command(app: AppHandle, command: String) -> Result<(), String
     Ok(())
 }
 
+/// Show the main window and force it to the foreground. `set_focus` alone is
+/// often ignored by Windows' foreground-lock policy when the request comes
+/// from a background process (tray click, single-instance signal, hotkey).
+pub fn show_and_focus_window(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.set_focus();
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        type SetForegroundWindowFn = unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
+        // Resolve SetForegroundWindow once; user32.dll stays loaded for the
+        // process lifetime so the raw fn pointer remains valid.
+        static SET_FG: std::sync::OnceLock<Option<SetForegroundWindowFn>> =
+            std::sync::OnceLock::new();
+        let set_fg = SET_FG.get_or_init(|| unsafe {
+            let user32_name = std::ffi::CString::new("user32.dll").ok()?;
+            let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
+            if user32.is_null() {
+                return None;
+            }
+            let func_name = std::ffi::CString::new("SetForegroundWindow").ok()?;
+            let proc_addr = winapi::um::libloaderapi::GetProcAddress(user32, func_name.as_ptr());
+            if proc_addr.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<
+                    *mut winapi::shared::minwindef::__some_function,
+                    SetForegroundWindowFn,
+                >(proc_addr))
+            }
+        });
+        if let (Ok(hwnd), Some(set_fg)) = (window.hwnd(), set_fg) {
+            unsafe {
+                set_fg(hwnd.0);
+            }
+        }
+    }
+
+    // Pre-warm the background capture in parallel with the window fade-in and
+    // webview focus event: WGC session creation costs hundreds of ms, and the
+    // frontend's own start_bg_capture will hit the already-live session.
+    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let pad_phys = (40.0 * scale).round() as u32;
+        let window_for_capture = window.clone();
+        let capture_epoch = crate::capture::lifecycle_epoch();
+        std::thread::spawn(move || {
+            if !window_for_capture.is_visible().unwrap_or(false)
+                || !window_for_capture.is_focused().unwrap_or(false)
+            {
+                return;
+            }
+            if let Err(e) = crate::capture::start_for_epoch(
+                capture_epoch,
+                pos.x,
+                pos.y,
+                size.width,
+                size.height,
+                pad_phys,
+            ) {
+                eprintln!("[FromZero] Capture pre-warm failed: {}", e);
+            }
+        });
+    }
+}
+
 fn toggle_window_visibility(window: &tauri::WebviewWindow) {
     let is_visible = window.is_visible().unwrap_or(false);
     let is_focused = window.is_focused().unwrap_or(false);
     if is_visible && is_focused {
         let _ = window.hide();
     } else {
-        let _ = window.show();
-        let _ = window.set_focus();
-        #[cfg(target_os = "windows")]
-        {
-            use std::ffi::c_void;
-            type SetForegroundWindowFn = unsafe extern "system" fn(hwnd: *mut c_void) -> i32;
-            // Resolve SetForegroundWindow once; user32.dll stays loaded for the
-            // process lifetime so the raw fn pointer remains valid.
-            static SET_FG: std::sync::OnceLock<Option<SetForegroundWindowFn>> =
-                std::sync::OnceLock::new();
-            let set_fg = SET_FG.get_or_init(|| unsafe {
-                let user32_name = std::ffi::CString::new("user32.dll").ok()?;
-                let user32 = winapi::um::libloaderapi::LoadLibraryA(user32_name.as_ptr());
-                if user32.is_null() {
-                    return None;
-                }
-                let func_name = std::ffi::CString::new("SetForegroundWindow").ok()?;
-                let proc_addr = winapi::um::libloaderapi::GetProcAddress(user32, func_name.as_ptr());
-                if proc_addr.is_null() {
-                    None
-                } else {
-                    Some(std::mem::transmute::<
-                        *mut winapi::shared::minwindef::__some_function,
-                        SetForegroundWindowFn,
-                    >(proc_addr))
-                }
-            });
-            if let (Ok(hwnd), Some(set_fg)) = (window.hwnd(), set_fg) {
-                unsafe {
-                    set_fg(hwnd.0);
-                }
-            }
-        }
+        show_and_focus_window(window);
     }
 }
 
@@ -473,7 +533,6 @@ pub fn debug_log(_msg: String) {
     println!("[Frontend-Debug] {}", _msg);
 }
 
-
 // =============================================
 // File Explorer Commands
 // =============================================
@@ -495,8 +554,9 @@ fn is_safe_path(path: &std::path::Path) -> bool {
     if let Some(path_str) = path.to_str() {
         let normalized = path_str.replace('/', "\\");
         if normalized.starts_with(r"\\") {
+            let normalized_upper = normalized.to_ascii_uppercase();
             // Reject UNC network/share paths (\\server\share and \\?\UNC\...).
-            if normalized.starts_with(r"\\?\UNC\") {
+            if normalized_upper.starts_with(r"\\?\UNC\") {
                 return false;
             }
             // Reject the device namespace (\\.\PhysicalDrive0, \\.\PIPE\..., etc.).
@@ -509,8 +569,16 @@ fn is_safe_path(path: &std::path::Path) -> bool {
             if !normalized.starts_with(r"\\?\") {
                 return false;
             }
-            // \\?\UNC\ already handled above; a remaining \\?\ that still points at
-            // a UNC share is caught there. Local \\?\C:\... paths are fine.
+            // Under the extended namespace, accept only a conventional local
+            // drive path (\\?\C:\...). This rejects GLOBALROOT, Volume GUID and
+            // other device namespaces that are not normal user files.
+            let local = normalized.as_bytes().get(4..);
+            if !matches!(
+                local,
+                Some([drive, b':', b'\\', ..]) if drive.is_ascii_alphabetic()
+            ) {
+                return false;
+            }
         }
     }
     true
@@ -639,6 +707,9 @@ pub async fn list_directory(path: String, search_term: String) -> Result<Vec<Fil
         let dir_path = dir_path
             .canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
+        if !is_safe_path(&dir_path) {
+            return Err("安全限制: 路径解析后指向网络、共享或设备路径。".to_string());
+        }
         if !dir_path.exists() {
             return Err(format!("路径不存在: {}", path));
         }
@@ -868,6 +939,9 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
         let file_path = file_path
             .canonicalize()
             .map_err(|e| format!("路径解析失败: {}", e))?;
+        if !is_safe_path(&file_path) {
+            return Err("安全限制: 路径解析后指向网络、共享或设备路径。".to_string());
+        }
         let path_clean = clean_path_str(file_path.to_string_lossy().to_string());
         if !file_path.exists() {
             return Err(format!("文件不存在: {}", path_clean));
@@ -879,9 +953,39 @@ pub async fn open_file(path: String, state: State<'_, AppState>) -> Result<(), S
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let dangerous_exts = [
-            "exe", "bat", "cmd", "ps1", "ps2", "psc1", "psc2", "vbs", "vbe", "wsf", "wsh", "ws",
-            "msi", "msp", "mst", "scr", "com", "pif", "lnk", "url", "hta", "js", "jse", "msc",
-            "cpl", "reg", "jar", "scf", "inf", "gadget", "appref-ms", "application", "vbscript",
+            "exe",
+            "bat",
+            "cmd",
+            "ps1",
+            "ps2",
+            "psc1",
+            "psc2",
+            "vbs",
+            "vbe",
+            "wsf",
+            "wsh",
+            "ws",
+            "msi",
+            "msp",
+            "mst",
+            "scr",
+            "com",
+            "pif",
+            "lnk",
+            "url",
+            "hta",
+            "js",
+            "jse",
+            "msc",
+            "cpl",
+            "reg",
+            "jar",
+            "scf",
+            "inf",
+            "gadget",
+            "appref-ms",
+            "application",
+            "vbscript",
         ];
         if dangerous_exts.contains(&ext.as_str()) {
             // Allow only if the file is in the scanned apps whitelist (either as shortcut or target executable)
@@ -926,15 +1030,7 @@ pub async fn start_bg_capture(app: AppHandle) -> Result<(), String> {
     if !is_visible {
         return Err("安全限制: 窗口不可见时无法启动后台捕获。".to_string());
     }
-    let pos = window.outer_position().map_err(|e| e.to_string())?;
-    let size = window.outer_size().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let pad_phys = (40.0 * scale).round() as u32; // 40 CSS px padding
-    tokio::task::spawn_blocking(move || {
-        crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    restart_capture_for_window(&app).await
 }
 
 #[tauri::command]
@@ -951,18 +1047,7 @@ pub async fn set_capture_fps(app: AppHandle, fps: u32) -> Result<(), String> {
     let fps_clamped = fps.clamp(15, 60);
     crate::capture::CAPTURE_FPS.store(fps_clamped, std::sync::atomic::Ordering::Relaxed);
     if crate::capture::is_active() {
-        let window = app
-            .get_webview_window("main")
-            .ok_or("Main window not found")?;
-        let pos = window.outer_position().map_err(|e| e.to_string())?;
-        let size = window.outer_size().map_err(|e| e.to_string())?;
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let pad_phys = (40.0 * scale).round() as u32;
-        tokio::task::spawn_blocking(move || {
-            crate::capture::start(pos.x, pos.y, size.width, size.height, pad_phys)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        restart_capture_for_window(&app).await?;
     }
     Ok(())
 }
@@ -983,6 +1068,7 @@ mod tests {
     fn test_is_safe_path_rejects_unc_share() {
         assert!(!is_safe_path(Path::new(r"\\server\share")));
         assert!(!is_safe_path(Path::new(r"\\?\UNC\server\share")));
+        assert!(!is_safe_path(Path::new(r"\\?\unc\server\share")));
         // Forward-slash UNC must be rejected too (normalized internally).
         assert!(!is_safe_path(Path::new(r"//server/share")));
     }
@@ -991,6 +1077,10 @@ mod tests {
     fn test_is_safe_path_rejects_device_namespace() {
         assert!(!is_safe_path(Path::new(r"\\.\PhysicalDrive0")));
         assert!(!is_safe_path(Path::new(r"\\.\PIPE\foo")));
+        assert!(!is_safe_path(Path::new(
+            r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1"
+        )));
+        assert!(!is_safe_path(Path::new(r"\\?\Volume{abc}\file.txt")));
     }
 
     #[test]

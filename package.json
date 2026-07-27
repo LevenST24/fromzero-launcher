@@ -1,10 +1,15 @@
 {
   "name": "fromzero-launcher",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "check:js": "node --check src/main.js && node --check src/js/dom.js && node --check src/js/glass.js && node --check src/js/preview.js && node --check src/js/search.js && node --check src/js/settings-ui.js && node --check src/js/state.js && node --check src/js/tauri.js",
+    "check:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+    "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
+    "check": "npm run check:js && npm run format:check && npm run check:rust",
+    "test": "npm run check:js && cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

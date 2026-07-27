@@ -74,8 +74,7 @@ pub fn preview_zip(path: &Path) -> Result<String, String> {
     let archive_bytes = meta.len();
     let file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
     // ZipArchive reads the end-of-central-directory; it does not load all payloads.
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("无法读取 ZIP: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("无法读取 ZIP: {}", e))?;
 
     let total = archive.len();
     let mut entries: Vec<(bool, String, u64)> = Vec::new();
@@ -95,7 +94,10 @@ pub fn preview_zip(path: &Path) -> Result<String, String> {
         entries.push((is_dir, display, size));
     }
 
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
 
     Ok(format_listing(
         "ZIP 压缩包",
@@ -136,7 +138,10 @@ pub fn preview_7z(path: &Path) -> Result<String, String> {
         .filter(|(_, name, _)| !name.is_empty())
         .collect();
 
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     let shown: Vec<_> = entries.into_iter().take(MAX_ENTRIES_LIST).collect();
 
     Ok(format_listing(
@@ -219,7 +224,10 @@ pub fn preview_tar(path: &Path) -> Result<String, String> {
     if total == 0 {
         return Err("无法解析 TAR（可能是损坏或非标准格式）".to_string());
     }
-    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     Ok(format_listing(
         "TAR 归档",
         archive_bytes,

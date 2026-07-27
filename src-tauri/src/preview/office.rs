@@ -94,10 +94,16 @@ fn extract_tag_texts(xml: &str, local_tag: &str) -> Vec<String> {
         let close_a = format!("</{}>", full_name);
 
         let search = &xml[open_end..];
-        let close_at = [close_a.as_str(), close_b.as_str(), close_c.as_str(), close_d.as_str(), close_e.as_str()]
-            .iter()
-            .filter_map(|p| search.find(p).map(|pos| (pos, p.len())))
-            .min_by_key(|(pos, _)| *pos);
+        let close_at = [
+            close_a.as_str(),
+            close_b.as_str(),
+            close_c.as_str(),
+            close_d.as_str(),
+            close_e.as_str(),
+        ]
+        .iter()
+        .filter_map(|p| search.find(p).map(|pos| (pos, p.len())))
+        .min_by_key(|(pos, _)| *pos);
 
         let Some((cpos, clen)) = close_at else {
             i = open_end;
@@ -135,9 +141,7 @@ fn list_slide_names<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Vec<String> 
             continue;
         };
         let name = file.name().replace('\\', "/");
-        if name.starts_with("ppt/slides/slide")
-            && name.ends_with(".xml")
-            && !name.contains("_rels")
+        if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") && !name.contains("_rels")
         {
             slides.push(name);
         }
@@ -161,8 +165,7 @@ pub fn preview_pptx(path: &Path) -> Result<String, String> {
         return Err("PPTX 文件过大，无法预览".to_string());
     }
     let file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|e| format!("不是有效的 PPTX 文件: {}", e))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("不是有效的 PPTX 文件: {}", e))?;
 
     let slide_names = list_slide_names(&mut archive);
     if slide_names.is_empty() {
@@ -228,8 +231,7 @@ pub fn preview_docx(path: &Path) -> Result<String, String> {
         return Err("DOCX 文件过大，无法预览".to_string());
     }
     let file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|e| format!("不是有效的 DOCX 文件: {}", e))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("不是有效的 DOCX 文件: {}", e))?;
 
     let xml = read_zip_entry_string(&mut archive, "word/document.xml")
         .ok_or_else(|| "无法读取 Word 文档内容".to_string())?;
@@ -265,8 +267,7 @@ pub fn preview_xlsx(path: &Path) -> Result<String, String> {
         return Err("XLSX 文件过大，无法预览".to_string());
     }
     let file = std::fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|e| format!("不是有效的 XLSX 文件: {}", e))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("不是有效的 XLSX 文件: {}", e))?;
 
     let shared = read_zip_entry_string(&mut archive, "xl/sharedStrings.xml").unwrap_or_default();
     let shared_strings = extract_tag_texts(&shared, "t");

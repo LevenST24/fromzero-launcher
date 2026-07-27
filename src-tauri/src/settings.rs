@@ -220,6 +220,16 @@ pub fn load_settings(app_handle: &AppHandle) -> Settings {
                     if settings.shortcut == "Shift+Q" {
                         settings.shortcut = default_shortcut();
                     }
+                    // Older recordings stored "Control"; normalize to "Ctrl" for
+                    // consistent display (both parse identically for registration).
+                    if settings.shortcut.split('+').any(|p| p == "Control") {
+                        settings.shortcut = settings
+                            .shortcut
+                            .split('+')
+                            .map(|p| if p == "Control" { "Ctrl" } else { p })
+                            .collect::<Vec<_>>()
+                            .join("+");
+                    }
                     return settings;
                 }
             }
