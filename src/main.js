@@ -212,10 +212,13 @@ async function handleGlobalKeys(e) {
     searchInput &&
     searchInput.value === state.currentDirPath
   ) {
-    // Go up one directory level
-    e.preventDefault();
+    // Go up one directory level — but only intercept the keystroke when there
+    // actually IS a parent to go to. At a drive root (e.g. "E:\") the regex
+    // can't climb further, so fall through to the normal Backspace so the user
+    // can delete the text instead of being stuck.
     const parentPath = state.currentDirPath.replace(/\\[^\\]+\\$/, "\\");
     if (parentPath !== state.currentDirPath && parentPath.length >= 3) {
+      e.preventDefault();
       searchInput.value = parentPath;
       handleSearch();
     }

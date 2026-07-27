@@ -159,6 +159,24 @@ function switchTab(tab) {
   });
 }
 
+function customDirsInput() {
+  return document.getElementById("custom-dirs-input");
+}
+
+function fillCustomDirsInput() {
+  const el = customDirsInput();
+  if (el) el.value = (state.settings.custom_app_dirs || []).join("; ");
+}
+
+function parseCustomDirsInput() {
+  const el = customDirsInput();
+  if (!el) return state.settings.custom_app_dirs || [];
+  return el.value
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function openSettings() {
   previouslyFocusedElement = document.activeElement;
   switchTab("general");
@@ -172,6 +190,7 @@ export function openSettings() {
   if (shortcutDisplay) shortcutDisplay.textContent = currentShortcut;
   if (autostartToggle)
     autostartToggle.checked = state.settings.autostart || false;
+  fillCustomDirsInput();
 
   // Back up settings in case of user cancel
   backupGlassSettings = { ...glassSettings };
@@ -226,6 +245,7 @@ async function saveSettingsConfig() {
   if (themeSelect) nextSettings.theme = themeSelect.value;
   nextSettings.shortcut = currentShortcut;
   if (autostartToggle) nextSettings.autostart = autostartToggle.checked;
+  nextSettings.custom_app_dirs = parseCustomDirsInput();
 
   const nextGlassSettings = readSlidersState();
   nextSettings.glass_settings = Object.fromEntries(

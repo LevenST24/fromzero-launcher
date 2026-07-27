@@ -105,6 +105,29 @@ pub fn update_settings(
     }
 
     settings::save_settings(&app_handle, &settings)?;
+
+    // Rescan the app index in the background when custom directories changed
+    // (settings already persisted above, so scan_all reads the fresh list).
+    if old_settings.custom_app_dirs != settings.custom_app_dirs {
+        eprintln!("[FromZero] Custom app dirs changed, rescanning in background...");
+        let app_handle_bg = app_handle.clone();
+        tokio::spawn(async move {
+            let scan_handle = app_handle_bg.clone();
+            if let Ok(apps) =
+                tokio::task::spawn_blocking(move || indexer::scan_all(&scan_handle)).await
+            {
+                let _ = indexer::save_apps_cache(&app_handle_bg, &apps);
+                if let Some(bg_state) = app_handle_bg.try_state::<AppState>() {
+                    if let Ok(mut cache) = bg_state.apps.lock() {
+                        *cache = apps.clone();
+                    }
+                }
+                let _ = app_handle_bg.emit("apps-updated", &apps);
+                indexer::trigger_icon_extraction(app_handle_bg, apps);
+            }
+        });
+    }
+
     Ok(())
 }
 
@@ -156,7 +179,7 @@ pub async fn scan_apps(
         tokio::spawn(async move {
             let app_handle_bg_clone = app_handle_bg.clone();
             let apps_now =
-                tokio::task::spawn_blocking(move || indexer::scan_start_menu(&app_handle_bg_clone))
+                tokio::task::spawn_blocking(move || indexer::scan_all(&app_handle_bg_clone))
                     .await;
 
             if let Ok(new_apps) = apps_now {
@@ -200,7 +223,7 @@ pub async fn scan_apps(
     // Fallback: perform synchronous scan on first run
     eprintln!("[FromZero] No apps cache found, performing synchronous scan on first run");
     let app_handle_clone = app_handle.clone();
-    let apps = tokio::task::spawn_blocking(move || indexer::scan_start_menu(&app_handle_clone))
+    let apps = tokio::task::spawn_blocking(move || indexer::scan_all(&app_handle_clone))
         .await
         .map_err(|e| format!("App scan thread failed: {}", e))?;
 
@@ -302,6 +325,33 @@ pub fn launch_app(path: String, state: State<'_, AppState>) -> Result<(), String
 
     if !is_whitelisted {
         return Err("Security Error: Target application is not in the whitelist".to_string());
+    }
+
+    // Direct .exe entries (custom-dir apps): launch with the exe's own folder
+    // as the working directory — many portable games load assets relative to
+    // CWD and crash when it points elsewhere. Shortcuts (.lnk) keep using the
+    // shell so their embedded working directory applies.
+    let is_exe = path_buf
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false);
+    if is_exe {
+        if let Some(parent) = path_buf.parent() {
+            match std::process::Command::new(&path_buf)
+                .current_dir(parent)
+                .spawn()
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    // e.g. os error 740 (elevation required) — fall back to the
+                    // shell, which handles the UAC prompt.
+                    eprintln!(
+                        "[FromZero] Direct spawn failed ({}), falling back to shell open",
+                        e
+                    );
+                }
+            }
+        }
     }
 
     open::that(&path).map_err(|e| format!("Failed to launch app: {}", e))

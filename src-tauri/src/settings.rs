@@ -158,6 +158,9 @@ pub struct Settings {
     pub recent_apps: Vec<String>,
     #[serde(default = "default_autostart")]
     pub autostart: bool,
+    /// Extra directories scanned for portable apps / games (.exe), e.g. E:\galgame
+    #[serde(default)]
+    pub custom_app_dirs: Vec<String>,
     #[serde(default)]
     pub glass_settings: GlassSettings,
 }
@@ -197,6 +200,7 @@ impl Default for Settings {
             web_engines: default_web_engines(),
             recent_apps: Vec::new(),
             autostart: default_autostart(),
+            custom_app_dirs: Vec::new(),
             glass_settings: GlassSettings::default(),
         }
     }
